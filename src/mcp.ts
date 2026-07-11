@@ -22,6 +22,8 @@ import { isSupportedLanguage, SUPPORTED_LANGUAGES } from "./kagi/languages.js";
 import type { SearchResponse } from "./kagi/types.js";
 import { asStructured, mcpError, mcpResult } from "./mcp/result.js";
 import { getResearchStub } from "./research/run.js";
+import { registerResources } from "./mcp/resources.js";
+import { registerPrompts } from "./mcp/prompts.js";
 
 const SEARCH_DESCRIPTION =
   "Fetch web results based on one or more queries using the Kagi.com web search engine. " +
@@ -122,6 +124,11 @@ export class KagiMcpAgent extends McpAgent<Env> {
     this.registerResearchWait();
     this.registerResearchOutput();
     this.registerResearchCancel();
+
+    // S9: resources + prompts. Registered last so tools/resources/prompts
+    // all live in one init() body — easier to audit.
+    registerResources(this.server, this.env);
+    registerPrompts(this.server);
   }
 
   private registerResearchCreate(): void {
