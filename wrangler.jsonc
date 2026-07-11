@@ -1,0 +1,48 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kagi-shinobi",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "observability": {
+    "enabled": true
+  },
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "MCP_OBJECT",
+        "class_name": "KagiMcpAgent"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["KagiMcpAgent"]
+    }
+  ],
+
+  "kv_namespaces": [
+    {
+      "binding": "TOKEN_KV",
+      // Replace with the id printed by: wrangler kv namespace create TOKEN_KV
+      "id": "02b633fbdaa3430dacf105d70dd215e5"
+    }
+  ],
+
+  // Cloudflare Browser Rendering — required for auto token refresh (Option C).
+  // Requires Workers Paid plan.
+  "browser": {
+    "binding": "BROWSER"
+  },
+
+  // Non-secret runtime config. Secrets (ADMIN_TOKEN, KAGI_SESSION_TOKEN,
+  // KAGI_EMAIL, KAGI_PASSWORD) go via `wrangler secret put`.
+  "vars": {
+    "AUTO_REFRESH_ENABLED": "true",
+    "TOKEN_KV_KEY": "session_token"
+  }
+}

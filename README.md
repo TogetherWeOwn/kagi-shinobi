@@ -1,0 +1,96 @@
+# kagi-shinobi
+
+Cloudflare Worker that fronts Kagi's search and summarizer through a session
+token, exposing them both as a **remote MCP server** and a **REST API**. Uses
+Chrome browser headers on every upstream call and refreshes its session token
+automatically via Cloudflare Browser Rendering when the current one expires.
+
+Built on top of [`czottmann/kagi-ken`](https://github.com/czottmann/kagi-ken)
+(ported to Workers) and modeled after
+[`czottmann/kagi-ken-mcp`](https://github.com/czottmann/kagi-ken-mcp) (ported
+from stdio to Streamable HTTP).
+
+## Endpoints
+
+| Path | Method | Auth | Purpose |
+|---|---|---|---|
+| `/mcp` | POST/GET | Bearer | MCP Streamable HTTP transport (McpAgent) |
+| `/search` | POST `{queries, limit?}` | Bearer | Direct search |
+| `/summarize` | POST `{url, summary_type?, target_language?}` | Bearer | Direct summarize |
+| `/admin/token` | POST `{token}` | Bearer | Manually rotate session token |
+| `/admin/refresh` | POST | Bearer | Force Browser Rendering refresh |
+| `/health` | GET | none | Liveness + token-staleness indicator |
+
+The Bearer token is the `ADMIN_TOKEN` secret. Use `Authorization: Bearer <token>`.
+
+## MCP tools exposed
+
+- `kagi_search_fetch({ queries: string[], limit?: number })`
+- `kagi_summarizer({ url: string, summary_type?: "summary"|"takeaway", target_language?: string })`
+
+Schemas match the upstream `kagi-ken-mcp` server so any client already
+configured for it works with a URL change.
+
+## Setup
+
+```powershell
+# 1. Install
+npm install
+
+# 2. Create the KV namespace and copy the id into wrangler.jsonc
+wrangler kv namespace create TOKEN_KV
+
+# 3. Set secrets
+wrangler secret put ADMIN_TOKEN          # openssl rand -hex 32
+wrangler secret put KAGI_SESSION_TOKEN   # from kagi.com/settings
+wrangler secret put KAGI_EMAIL           # optional, for auto-refresh
+wrangler secret put KAGI_PASSWORD        # optional, for auto-refresh
+
+# 4. Deploy
+wrangler deploy
+```
+
+For local dev, copy `.dev.vars.example` to `.dev.vars`, fill in values, then
+`npm run dev`.
+
+## Client config
+
+**Claude Desktop / MCP Inspector — remote MCP:**
+```json
+{
+  "mcpServers": {
+    "kagi-shinobi": {
+      "url": "https://kagi-shinobi.<your-subdomain>.workers.dev/mcp",
+      "headers": { "Authorization": "Bearer <your ADMIN_TOKEN>" }
+    }
+  }
+}
+```
+
+**curl — direct search:**
+```bash
+curl -X POST https://kagi-shinobi.<subdomain>.workers.dev/search \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"queries":["cloudflare workers durable objects"],"limit":5}'
+```
+
+## Token auto-refresh (Option C hybrid)
+
+- Primary: the `KAGI_SESSION_TOKEN` secret / KV cache is used for every request.
+- On upstream `401`/`403`: the worker marks the KV entry stale and, if
+  `AUTO_REFRESH_ENABLED=true` and Browser Rendering is available, spawns a
+  Puppeteer session that logs into Kagi with `KAGI_EMAIL`/`KAGI_PASSWORD`,
+  reads the fresh `kagi_session` cookie, and writes it to KV.
+- Manual override: `POST /admin/token` accepts a new token any time.
+- If auto-refresh is disabled or fails, `/search` and `/summarize` return
+  `401 kagi-token-stale` and `/health` reports `"token": "stale"`.
+
+Set `AUTO_REFRESH_ENABLED=false` in `wrangler.jsonc` `vars` if you don't want
+to pay for Browser Rendering — you'll rotate tokens manually via
+`/admin/token`.
+
+## License
+
+MIT. Upstream `kagi-ken` and `kagi-ken-mcp` are also MIT — see `src/kagi/*`
+for attribution headers on ported files.

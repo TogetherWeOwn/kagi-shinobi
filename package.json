@@ -1,0 +1,27 @@
+{
+  "name": "kagi-shinobi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker fronting Kagi search + summarizer via session token, exposed as remote MCP and REST. Chrome-headers stealth. Auto token refresh via Browser Rendering.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "cf-typegen": "wrangler types",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@cloudflare/puppeteer": "^1.1.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "agents": "^0.17.3",
+    "cheerio": "^1.1.2",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.4",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.9",
+    "wrangler": "^4.110.0"
+  }
+}
