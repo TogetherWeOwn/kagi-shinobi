@@ -98,6 +98,7 @@ describe("pickImpl", () => {
     expect(pickImpl("kagi_summarize_text", "hybrid")).toBe("api");
     expect(pickImpl("kagi_extract", "hybrid")).toBe("api");
     expect(pickImpl("kagi_list_lenses", "hybrid")).toBe("scrape");
+    expect(pickImpl("kagi_fastgpt", "hybrid")).toBe("api");
   });
 
   it("hybrid respects a caller-supplied impl override", () => {

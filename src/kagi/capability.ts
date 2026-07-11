@@ -78,10 +78,12 @@ export const CAPABILITY_MATRIX: ToolCapability[] = [
     api_billable: false,
   },
   {
+    // Scrape impl arrives in a follow-up (kagi.com/fastgpt HTML/stream
+    // reverse-engineering). Api-only for S4.
     tool: "kagi_fastgpt",
-    support: "both",
-    hybrid_prefer: "scrape",
-    expose_impl_param: true,
+    support: "api",
+    hybrid_prefer: "api",
+    expose_impl_param: false,
     api_billable: true,
     api_cents_per_call: 1.5, // $15 / 1000
   },

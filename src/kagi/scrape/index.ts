@@ -11,6 +11,7 @@ import { loadToken, markStale } from "../../token/store.js";
 import { refreshTokenViaBrowser } from "../../token/refresh.js";
 import { scrapeSearchToCanonical, scrapeSummarizeToCanonical } from "../normalize.js";
 import type { SearchResponse, SummarizeResponse, SummarizerEngine, SummaryStyle } from "../types.js";
+import { scrapeSmallWeb, type ScrapeSmallWebArgs } from "./smallweb.js";
 
 export interface ScrapeSearchArgs {
   q: string;
@@ -105,6 +106,16 @@ export class KagiScrapeClient {
         },
       });
     }
+  }
+
+  async smallWeb(args: ScrapeSmallWebArgs): Promise<SearchResponse> {
+    // Browse-recent (empty q) uses the free RSS feed — no session needed.
+    // Search-in-Small-Web needs the cookie.
+    if (!args.q) {
+      return scrapeSmallWeb(args, undefined);
+    }
+    const { token } = await this.currentToken();
+    return scrapeSmallWeb(args, token);
   }
 
   private async currentToken(): Promise<{

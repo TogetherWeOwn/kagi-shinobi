@@ -1,16 +1,17 @@
 // Remote MCP server: exposes tools over Streamable HTTP.
 //
-// S2 wires every tool through the KagiClient facade so the mode dispatcher
-// (scrape / api / hybrid / auto) runs on every call. `kagi_search_fetch`
-// and `kagi_summarizer` keep their original names + text output for
-// back-compat; downstream sprints layer richer tools on the same canonical
-// shapes in src/kagi/types.ts.
+// S2 wired the KagiClient facade so the mode dispatcher runs on every call.
+// S3 added the official API endpoint impls. S4 registers the differentiated
+// tools (small_web, fastgpt, extract, enrich_{web,news}) with mode-gated
+// availability — tools whose active-mode support says "unavailable" never
+// appear in tools/list.
 
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Env } from "./env.js";
 import { createKagiClient, type KagiClient } from "./kagi/client.js";
+import { isToolAvailable } from "./kagi/capability.js";
 import {
   KagiConfirmRequiredError,
   KagiError,
@@ -19,7 +20,7 @@ import {
 } from "./kagi/errors.js";
 import { isSupportedLanguage, SUPPORTED_LANGUAGES } from "./kagi/languages.js";
 import type { SearchResponse } from "./kagi/types.js";
-import { asStructured, mcpResult } from "./mcp/result.js";
+import { asStructured, mcpError, mcpResult } from "./mcp/result.js";
 
 const SEARCH_DESCRIPTION =
   "Fetch web results based on one or more queries using the Kagi.com web search engine. " +
@@ -31,6 +32,27 @@ const SUMMARIZE_DESCRIPTION =
   "Summarize content from a URL using the Kagi.com Summarizer API. The Summarizer can summarize " +
   "any document type (text webpage, video, audio, etc.)";
 
+const SMALL_WEB_DESCRIPTION =
+  "Search Kagi's Small Web index — an independent corpus of personal blogs, RSS feeds, and " +
+  "non-commercial pages that don't appear in mainstream engines. Omit `q` to browse recent " +
+  "posts via the free RSS feed.";
+
+const FASTGPT_DESCRIPTION =
+  "Ask Kagi's FastGPT for a cited answer to a question. Returns a short answer with " +
+  "references. Faster than a full search when you want a direct answer.";
+
+const EXTRACT_DESCRIPTION =
+  "Fetch one or more URLs and return their clean-markdown content (up to 10 URLs per call). " +
+  "Uses Kagi's /v1/extract endpoint.";
+
+const ENRICH_WEB_DESCRIPTION =
+  "Search Kagi's Teclis web enrichment index — an independent (non-Google/Bing) crawl of " +
+  "general, non-commercial content. Returns metadata only; chain into kagi_extract for bodies.";
+
+const ENRICH_NEWS_DESCRIPTION =
+  "Search Kagi's TinyGem news enrichment index. Returns metadata only for non-mainstream " +
+  "news sources.";
+
 export class KagiMcpAgent extends McpAgent<Env> {
   server = new McpServer({
     name: "kagi-shinobi",
@@ -39,8 +61,18 @@ export class KagiMcpAgent extends McpAgent<Env> {
 
   async init(): Promise<void> {
     const client = createKagiClient(this.env);
+    const mode = client.mode;
+
+    // Always registered — capability matrix marks these "both".
     this.registerSearchFetch(client);
     this.registerSummarizer(client);
+    this.registerSmallWeb(client);
+
+    // Mode-gated tools: only appear when the impl is reachable.
+    if (isToolAvailable("kagi_fastgpt", mode)) this.registerFastGPT(client);
+    if (isToolAvailable("kagi_extract", mode)) this.registerExtract(client);
+    if (isToolAvailable("kagi_enrich_web", mode)) this.registerEnrichWeb(client);
+    if (isToolAvailable("kagi_enrich_news", mode)) this.registerEnrichNews(client);
   }
 
   private registerSearchFetch(client: KagiClient): void {
@@ -140,7 +172,7 @@ export class KagiMcpAgent extends McpAgent<Env> {
               text: `Error: unsupported target_language '${target_language}'. Supported: ${SUPPORTED_LANGUAGES.join(", ")}`,
               structured: {
                 error_kind: "invalid_language",
-                supported: SUPPORTED_LANGUAGES,
+                supported: [...SUPPORTED_LANGUAGES],
               },
               isError: true,
             });
@@ -157,15 +189,147 @@ export class KagiMcpAgent extends McpAgent<Env> {
             structured: asStructured(canonical),
           });
         } catch (err) {
-          return mcpResult({
-            text: `Error: ${describeError(err)}`,
-            structured: { error_kind: errorKind(err), message: describeError(err) },
-            isError: true,
-          });
+          return kagiErrorMcp(err);
         }
       },
     );
   }
+
+  private registerSmallWeb(client: KagiClient): void {
+    this.server.tool(
+      "kagi_small_web",
+      SMALL_WEB_DESCRIPTION,
+      {
+        q: z
+          .string()
+          .optional()
+          .describe("Search query. Omit to browse recent Small Web posts via RSS (free)."),
+        limit: z.number().int().min(1).max(50).optional(),
+        impl: z.enum(["scrape", "api"]).optional(),
+      },
+      async ({ q, limit, impl }) => {
+        try {
+          const canonical = await client.smallWeb({ q, limit, impl });
+          return mcpResult({
+            text: formatSmallWebText(canonical),
+            structured: asStructured(canonical),
+          });
+        } catch (err) {
+          return kagiErrorMcp(err);
+        }
+      },
+    );
+  }
+
+  private registerFastGPT(client: KagiClient): void {
+    this.server.tool(
+      "kagi_fastgpt",
+      FASTGPT_DESCRIPTION,
+      {
+        query: z.string().min(1).describe("The question to answer."),
+        cache: z
+          .boolean()
+          .optional()
+          .describe("Allow a cached answer (default: true; cached responses are free)."),
+      },
+      async ({ query, cache }) => {
+        try {
+          const canonical = await client.fastGPT({ query, cache });
+          const text =
+            canonical.answer +
+            (canonical.references.length > 0
+              ? "\n\nReferences:\n" +
+                canonical.references
+                  .map((r, i) => `${i + 1}. ${r.title} — ${r.url}`)
+                  .join("\n")
+              : "");
+          return mcpResult({ text, structured: asStructured(canonical) });
+        } catch (err) {
+          return kagiErrorMcp(err);
+        }
+      },
+    );
+  }
+
+  private registerExtract(client: KagiClient): void {
+    this.server.tool(
+      "kagi_extract",
+      EXTRACT_DESCRIPTION,
+      {
+        urls: z.array(z.string().url()).min(1).max(10).describe("1 to 10 URLs to extract."),
+        format: z.enum(["markdown", "text"]).optional(),
+        timeout_ms: z.number().int().min(1000).max(120_000).optional(),
+      },
+      async ({ urls, format, timeout_ms }) => {
+        try {
+          const canonical = await client.extract({ urls, format, timeout_ms });
+          const text = canonical.pages
+            .map((p, i) => `--- Page ${i + 1}: ${p.url} ---\n${p.markdown}`)
+            .join("\n\n");
+          return mcpResult({ text, structured: asStructured(canonical) });
+        } catch (err) {
+          return kagiErrorMcp(err);
+        }
+      },
+    );
+  }
+
+  private registerEnrichWeb(client: KagiClient): void {
+    this.server.tool(
+      "kagi_enrich_web",
+      ENRICH_WEB_DESCRIPTION,
+      { q: z.string().min(1) },
+      async ({ q }) => {
+        try {
+          const canonical = await client.enrichWeb({ q });
+          return mcpResult({
+            text: formatEnrichText(canonical.index, canonical.results),
+            structured: asStructured(canonical),
+          });
+        } catch (err) {
+          return kagiErrorMcp(err);
+        }
+      },
+    );
+  }
+
+  private registerEnrichNews(client: KagiClient): void {
+    this.server.tool(
+      "kagi_enrich_news",
+      ENRICH_NEWS_DESCRIPTION,
+      { q: z.string().min(1) },
+      async ({ q }) => {
+        try {
+          const canonical = await client.enrichNews({ q });
+          return mcpResult({
+            text: formatEnrichText(canonical.index, canonical.results),
+            structured: asStructured(canonical),
+          });
+        } catch (err) {
+          return kagiErrorMcp(err);
+        }
+      },
+    );
+  }
+}
+
+function kagiErrorMcp(err: unknown) {
+  if (err instanceof KagiConfirmRequiredError) {
+    return mcpError({ kind: "confirm_required", message: err.message, detail: err.detail });
+  }
+  if (err instanceof KagiUnsupportedInModeError) {
+    return mcpError({ kind: "unsupported_in_mode", message: err.message, detail: err.detail });
+  }
+  if (err instanceof KagiNotConfiguredError) {
+    return mcpError({ kind: "not_configured", message: err.message });
+  }
+  if (err instanceof KagiError) {
+    return mcpError({ kind: err.kind, message: err.message, detail: err.detail });
+  }
+  return mcpError({
+    kind: "internal",
+    message: err instanceof Error ? err.message : String(err),
+  });
 }
 
 function describeError(reason: unknown): string {
@@ -174,16 +338,26 @@ function describeError(reason: unknown): string {
   return String(reason);
 }
 
-function errorKind(reason: unknown): string {
-  if (reason instanceof KagiConfirmRequiredError) return "confirm_required";
-  if (reason instanceof KagiUnsupportedInModeError) return "unsupported_in_mode";
-  if (reason instanceof KagiNotConfiguredError) return "not_configured";
-  if (reason instanceof KagiError) return reason.kind;
-  return "internal";
+function formatSmallWebText(resp: SearchResponse): string {
+  if (resp.results.length === 0) return "(no Small Web results)";
+  return resp.results
+    .map((r, i) => `${i + 1}. ${r.title || "(untitled)"}\n${r.url}\n${r.snippet || ""}`)
+    .join("\n\n");
 }
 
-// Match the text layout of czottmann/kagi-ken-mcp so clients that grep the
-// output for numbered results keep working.
+function formatEnrichText(
+  index: "teclis" | "tinygem",
+  results: Array<{ url: string; title: string; snippet: string; published_at?: string }>,
+): string {
+  if (results.length === 0) return `(no ${index} results — no charge)`;
+  return results
+    .map(
+      (r, i) =>
+        `${i + 1}. ${r.title}\n${r.url}${r.published_at ? "\n" + r.published_at : ""}\n${r.snippet}`,
+    )
+    .join("\n\n");
+}
+
 function formatSearchResults(
   queries: string[],
   responses: (SearchResponse | null)[],

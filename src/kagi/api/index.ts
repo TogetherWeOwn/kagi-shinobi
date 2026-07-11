@@ -21,6 +21,7 @@ import { apiExtract } from "./extract.js";
 import { apiFastGPT } from "./fastgpt.js";
 import { apiSummarize } from "./summarize.js";
 import { apiEnrichNews, apiEnrichWeb } from "./enrich.js";
+import { apiSmallWeb, type ApiSmallWebArgs } from "./smallweb.js";
 
 export interface ApiSearchArgs {
   q: string;
@@ -111,6 +112,11 @@ export class KagiApiImpl {
   async enrichNews(args: ApiEnrichArgs): Promise<EnrichResponse> {
     this.client.requireConfigured();
     return apiEnrichNews(this.env, args);
+  }
+
+  async smallWeb(args: ApiSmallWebArgs): Promise<SearchResponse> {
+    this.client.requireConfigured();
+    return apiSmallWeb(this.env, args);
   }
 }
 

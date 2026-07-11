@@ -119,19 +119,13 @@ export class KagiClient {
     });
   }
 
-  /**
-   * FastGPT. Scrape impl is stubbed until S4 — call in scrape mode returns
-   * KagiNotConfiguredError. In S3 the tool is not yet registered on the MCP
-   * surface; only internal composition (e.g. S8 deep research) reaches this.
-   */
   async fastGPT(args: FastGPTArgs): Promise<FastGPTResponse> {
-    // Deliberately bypass pickImpl until S4 flips kagi_fastgpt to "both".
-    // Until then this is api-only.
+    pickImpl("kagi_fastgpt", this.mode); // enforces mode gate (api-only for now)
     return this.api.fastGPT({ query: args.query, cache: args.cache });
   }
 
   async extract(args: ExtractArgs): Promise<ExtractResponse> {
-    pickImpl("kagi_extract", this.mode); // enforces mode gate
+    pickImpl("kagi_extract", this.mode);
     return this.api.extract(args);
   }
 
@@ -143,6 +137,14 @@ export class KagiClient {
   async enrichNews(args: EnrichArgs): Promise<EnrichResponse> {
     pickImpl("kagi_enrich_news", this.mode);
     return this.api.enrichNews(args);
+  }
+
+  async smallWeb(args: { q?: string; limit?: number; impl?: ImplKind }): Promise<SearchResponse> {
+    const impl = pickImpl("kagi_small_web", this.mode, args.impl);
+    if (impl === "scrape") {
+      return this.scrape.smallWeb({ q: args.q, limit: args.limit });
+    }
+    return this.api.smallWeb({ q: args.q, limit: args.limit });
   }
 }
 
