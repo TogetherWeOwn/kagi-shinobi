@@ -5,6 +5,9 @@
 
 import type { Env } from "../../env.js";
 import { KagiAuthError, KagiError, KagiNotConfiguredError } from "../errors.js";
+
+const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
+
 import { search as rawSearch } from "../search.js";
 import { summarize as rawSummarize } from "../summarize.js";
 import { loadToken, markStale } from "../../token/store.js";
@@ -139,8 +142,18 @@ export class KagiScrapeClient {
     if (result.ok && result.token) {
       return { token: result.token, refreshTriggered: true, stale: false };
     }
+    // Refresh failed. Serving a stale token silently causes callers to loop
+    // through 401 → refresh → 401 with no cache signal that the session is
+    // dead. If the token has been marked stale for more than TWELVE_HOURS,
+    // fail fast so the operator gets a clear 503 instead of a slow-but-broken
+    // stream of results.
     if (envelope) {
-      // Stale is better than nothing — the next 401 will retrigger refresh.
+      const staleFor = envelope.staleAt ? Date.now() - envelope.staleAt : 0;
+      if (envelope.stale && staleFor > TWELVE_HOURS_MS) {
+        throw new KagiNotConfiguredError(
+          `Session token has been stale for ${Math.round(staleFor / 3_600_000)}h and refresh keeps failing (${result.reason ?? "unknown"}). Push a fresh token via POST /admin/token.`,
+        );
+      }
       return { token: envelope.token, refreshTriggered: false, stale: true };
     }
     throw new KagiNotConfiguredError(
