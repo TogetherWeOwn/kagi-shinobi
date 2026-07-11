@@ -7,6 +7,7 @@ import { jsonError } from "./util/errors.js";
 import { handleSearch, handleSummarize } from "./rest.js";
 import { handleAdminRefresh, handleAdminToken, handleHealth } from "./token/admin.js";
 import { KagiMcpAgent } from "./mcp.js";
+import { landingResponse } from "./landing.js";
 
 export { KagiMcpAgent };
 
@@ -16,6 +17,11 @@ export default {
     const path = url.pathname;
     const method = request.method;
 
+    // Public routes — no bearer required. Landing page + health check are
+    // safe to expose; everything else is gated below.
+    if (path === "/" && method === "GET") {
+      return landingResponse();
+    }
     if (path === "/health" && method === "GET") {
       return handleHealth(request, env);
     }

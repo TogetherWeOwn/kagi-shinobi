@@ -59,7 +59,7 @@ export async function search(
   return { data: parseSearchResults(html, limit) };
 }
 
-function parseSearchResults(html: string, limit: number): SearchDataItem[] {
+export function parseSearchResults(html: string, limit: number): SearchDataItem[] {
   const $ = cheerio.load(html);
   const results: SearchDataItem[] = [];
   let count = 0;

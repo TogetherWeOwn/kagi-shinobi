@@ -1,6 +1,11 @@
 // Remote MCP server: exposes kagi_search_fetch and kagi_summarizer over
 // Streamable HTTP. Tool schemas + descriptions mirror czottmann/kagi-ken-mcp
 // so any client already configured for that server works with a URL swap.
+//
+// As of S1 both tools emit `structuredContent` alongside the legacy text
+// output. Downstream sprints layer richer tools (search, small_web, fastgpt,
+// extract, enrich, personalized_rank, deep_research) on top of the same
+// canonical shapes in src/kagi/types.ts.
 
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -10,6 +15,12 @@ import { searchWithAuth, summarizeWithAuth, TokenUnavailableError } from "./kagi
 import { KagiAuthError } from "./kagi/errors.js";
 import { isSupportedLanguage, SUPPORTED_LANGUAGES } from "./kagi/languages.js";
 import type { SearchDataItem, SearchResultItem } from "./kagi/search.js";
+import type { SearchResponse, SummarizeResponse } from "./kagi/types.js";
+import {
+  scrapeSearchToCanonical,
+  scrapeSummarizeToCanonical,
+} from "./kagi/normalize.js";
+import { asStructured, mcpResult } from "./mcp/result.js";
 
 const SEARCH_DESCRIPTION =
   "Fetch web results based on one or more queries using the Kagi.com web search engine. " +
@@ -24,7 +35,7 @@ const SUMMARIZE_DESCRIPTION =
 export class KagiMcpAgent extends McpAgent<Env> {
   server = new McpServer({
     name: "kagi-shinobi",
-    version: "0.1.0",
+    version: "0.2.0",
   });
 
   async init(): Promise<void> {
@@ -48,25 +59,43 @@ export class KagiMcpAgent extends McpAgent<Env> {
       },
       async ({ queries, limit }) => {
         const cap = limit ?? 10;
+        const startedAt = Date.now();
         const settled = await Promise.allSettled(
           queries.map((q) => searchWithAuth(this.env, q, cap)),
         );
 
-        const responses = settled.map((r) =>
-          r.status === "fulfilled" ? r.value.data : null,
-        );
-        const errors = settled
-          .map((r, i) =>
-            r.status === "rejected"
-              ? `Query "${queries[i]}": ${describeError(r.reason)}`
-              : null,
-          )
-          .filter((s): s is string => s !== null);
+        const perQuery: SearchResponse[] = [];
+        const errors: Array<{ query: string; error: string }> = [];
+        const responses: Array<SearchDataItem[] | null> = [];
+
+        for (let i = 0; i < queries.length; i++) {
+          const s = settled[i];
+          const q = queries[i];
+          if (s.status === "fulfilled") {
+            responses.push(s.value.data);
+            perQuery.push(
+              scrapeSearchToCanonical(q, s.value.data, {
+                impl: "scrape",
+                start_ms: startedAt,
+              }),
+            );
+          } else {
+            responses.push(null);
+            errors.push({ query: q, error: describeError(s.reason) });
+          }
+        }
 
         let text = formatSearchResults(queries, responses);
-        if (errors.length > 0) text += `\n\nErrors encountered:\n${errors.join("\n")}`;
+        if (errors.length > 0) {
+          text += `\n\nErrors encountered:\n${errors
+            .map((e) => `Query "${e.query}": ${e.error}`)
+            .join("\n")}`;
+        }
 
-        return { content: [{ type: "text", text }] };
+        return mcpResult({
+          text,
+          structured: { queries: perQuery as unknown[], errors },
+        });
       },
     );
 
@@ -89,26 +118,42 @@ export class KagiMcpAgent extends McpAgent<Env> {
           ),
       },
       async ({ url, summary_type, target_language }) => {
+        const startedAt = Date.now();
         try {
           const language = target_language ?? "EN";
           if (target_language && !isSupportedLanguage(target_language)) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Error: unsupported target_language '${target_language}'. Supported: ${SUPPORTED_LANGUAGES.join(", ")}`,
-                },
-              ],
-            };
+            return mcpResult({
+              text: `Error: unsupported target_language '${target_language}'. Supported: ${SUPPORTED_LANGUAGES.join(", ")}`,
+              structured: {
+                error_kind: "invalid_language",
+                supported: SUPPORTED_LANGUAGES,
+              },
+              isError: true,
+            });
           }
           const result = await summarizeWithAuth(this.env, url, {
             type: summary_type,
             language,
             isUrl: true,
           });
-          return { content: [{ type: "text", text: result.data.output || "" }] };
+          const canonical: SummarizeResponse = scrapeSummarizeToCanonical(result, {
+            ref: url,
+            kind: "url",
+            language,
+            style: summary_type,
+            engine: "scrape-default",
+            metaInit: { impl: "scrape", start_ms: startedAt },
+          });
+          return mcpResult({
+            text: result.data.output || "",
+            structured: asStructured(canonical),
+          });
         } catch (err) {
-          return { content: [{ type: "text", text: `Error: ${describeError(err)}` }] };
+          return mcpResult({
+            text: `Error: ${describeError(err)}`,
+            structured: { error_kind: errorKind(err), message: describeError(err) },
+            isError: true,
+          });
         }
       },
     );
@@ -120,6 +165,12 @@ function describeError(reason: unknown): string {
   if (reason instanceof KagiAuthError) return "kagi token stale";
   if (reason instanceof Error) return reason.message;
   return String(reason);
+}
+
+function errorKind(reason: unknown): string {
+  if (reason instanceof TokenUnavailableError) return "token_missing";
+  if (reason instanceof KagiAuthError) return "auth";
+  return "internal";
 }
 
 // Match the text layout of czottmann/kagi-ken-mcp so clients that grep the
