@@ -53,6 +53,17 @@ const ENRICH_NEWS_DESCRIPTION =
   "Search Kagi's TinyGem news enrichment index. Returns metadata only for non-mainstream " +
   "news sources.";
 
+const SUMMARIZE_URL_DESCRIPTION =
+  "Summarize a URL with Kagi's Universal Summarizer. Optional engine picker: " +
+  "cecil (default, $0.03/1k tokens, capped at $0.30), agnes (same tier), daphne (same tier), " +
+  "or muriel ($1 flat per summary — requires confirm_muriel=true).";
+
+const SUMMARIZE_TEXT_DESCRIPTION =
+  "Summarize raw text with Kagi's Universal Summarizer. Body cap 1MB. Same engine + " +
+  "pricing options as kagi_summarize_url. API-only — not available in scrape mode.";
+
+const ENGINE_ENUM = ["cecil", "agnes", "daphne", "muriel"] as const;
+
 export class KagiMcpAgent extends McpAgent<Env> {
   server = new McpServer({
     name: "kagi-shinobi",
@@ -68,11 +79,102 @@ export class KagiMcpAgent extends McpAgent<Env> {
     this.registerSummarizer(client);
     this.registerSmallWeb(client);
 
+    // kagi_summarize_url is "both" — always available.
+    this.registerSummarizeUrl(client);
+
     // Mode-gated tools: only appear when the impl is reachable.
     if (isToolAvailable("kagi_fastgpt", mode)) this.registerFastGPT(client);
     if (isToolAvailable("kagi_extract", mode)) this.registerExtract(client);
     if (isToolAvailable("kagi_enrich_web", mode)) this.registerEnrichWeb(client);
     if (isToolAvailable("kagi_enrich_news", mode)) this.registerEnrichNews(client);
+    if (isToolAvailable("kagi_summarize_text", mode)) this.registerSummarizeText(client);
+  }
+
+  private registerSummarizeUrl(client: KagiClient): void {
+    this.server.tool(
+      "kagi_summarize_url",
+      SUMMARIZE_URL_DESCRIPTION,
+      {
+        url: z.string().url(),
+        engine: z.enum(ENGINE_ENUM).optional(),
+        summary_type: z.enum(["summary", "takeaway"]).default("summary"),
+        target_language: z.string().optional(),
+        confirm_muriel: z
+          .boolean()
+          .optional()
+          .describe("Required when engine=muriel unless SUMMARIZER_MURIEL_REQUIRES_CONFIRM=false."),
+        cache: z.boolean().optional(),
+        impl: z.enum(["scrape", "api"]).optional(),
+      },
+      async ({ url, engine, summary_type, target_language, confirm_muriel, impl }) => {
+        try {
+          const language = target_language ?? "EN";
+          if (target_language && !isSupportedLanguage(target_language)) {
+            return mcpError({
+              kind: "invalid_language",
+              message: `unsupported target_language '${target_language}'`,
+              detail: { supported: [...SUPPORTED_LANGUAGES] },
+            });
+          }
+          const canonical = await client.summarize({
+            kind: "url",
+            ref: url,
+            language,
+            style: summary_type,
+            engine,
+            confirm_muriel,
+            impl,
+          });
+          return mcpResult({
+            text: canonical.summary || "",
+            structured: asStructured(canonical),
+          });
+        } catch (err) {
+          return kagiErrorMcp(err);
+        }
+      },
+    );
+  }
+
+  private registerSummarizeText(client: KagiClient): void {
+    this.server.tool(
+      "kagi_summarize_text",
+      SUMMARIZE_TEXT_DESCRIPTION,
+      {
+        text: z.string().min(1).max(1_000_000).describe("Raw text to summarize (max 1MB)."),
+        engine: z.enum(ENGINE_ENUM).optional(),
+        summary_type: z.enum(["summary", "takeaway"]).default("summary"),
+        target_language: z.string().optional(),
+        confirm_muriel: z.boolean().optional(),
+        cache: z.boolean().optional(),
+      },
+      async ({ text, engine, summary_type, target_language, confirm_muriel }) => {
+        try {
+          const language = target_language ?? "EN";
+          if (target_language && !isSupportedLanguage(target_language)) {
+            return mcpError({
+              kind: "invalid_language",
+              message: `unsupported target_language '${target_language}'`,
+              detail: { supported: [...SUPPORTED_LANGUAGES] },
+            });
+          }
+          const canonical = await client.summarize({
+            kind: "text",
+            ref: text,
+            language,
+            style: summary_type,
+            engine,
+            confirm_muriel,
+          });
+          return mcpResult({
+            text: canonical.summary || "",
+            structured: asStructured(canonical),
+          });
+        } catch (err) {
+          return kagiErrorMcp(err);
+        }
+      },
+    );
   }
 
   private registerSearchFetch(client: KagiClient): void {
