@@ -12,6 +12,8 @@ import { refreshTokenViaBrowser } from "../../token/refresh.js";
 import { scrapeSearchToCanonical, scrapeSummarizeToCanonical } from "../normalize.js";
 import type { SearchResponse, SummarizeResponse, SummarizerEngine, SummaryStyle } from "../types.js";
 import { scrapeSmallWeb, type ScrapeSmallWebArgs } from "./smallweb.js";
+import { scrapeRank, type ScrapeRankArgs } from "./rank.js";
+import type { RankResponse } from "../types.js";
 
 export interface ScrapeSearchArgs {
   q: string;
@@ -116,6 +118,11 @@ export class KagiScrapeClient {
     }
     const { token } = await this.currentToken();
     return scrapeSmallWeb(args, token);
+  }
+
+  async rank(args: ScrapeRankArgs): Promise<RankResponse> {
+    const { token } = await this.currentToken();
+    return scrapeRank(args, token);
   }
 
   private async currentToken(): Promise<{

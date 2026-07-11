@@ -19,6 +19,8 @@ import type {
   ExtractResponse,
   FastGPTResponse,
   ImplKind,
+  PersonalizationRule,
+  RankResponse,
   SearchResponse,
   SummarizeResponse,
   SummarizerEngine,
@@ -145,6 +147,23 @@ export class KagiClient {
       return this.scrape.smallWeb({ q: args.q, limit: args.limit });
     }
     return this.api.smallWeb({ q: args.q, limit: args.limit });
+  }
+
+  async rank(args: {
+    urls: string[];
+    q?: string;
+    rules?: PersonalizationRule[];
+    impl?: ImplKind;
+  }): Promise<RankResponse> {
+    const impl = pickImpl("kagi_personalized_rank", this.mode, args.impl);
+    if (impl === "scrape") {
+      return this.scrape.rank({ urls: args.urls, q: args.q });
+    }
+    // api mode: q is required (server-side stateless personalization run)
+    if (!args.q) {
+      throw new Error("api-mode rank requires q");
+    }
+    return this.api.rank({ urls: args.urls, q: args.q, rules: args.rules });
   }
 }
 

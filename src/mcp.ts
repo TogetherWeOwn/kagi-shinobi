@@ -64,6 +64,11 @@ const SUMMARIZE_TEXT_DESCRIPTION =
 
 const ENGINE_ENUM = ["cecil", "agnes", "daphne", "muriel"] as const;
 
+const RANK_DESCRIPTION =
+  "Rerank a list of URLs by how well they align with Kagi's personalization " +
+  "for the account. Scrape mode uses site: probes against the account's saved " +
+  "block/promote lists. API mode accepts explicit rules[] with domain + action.";
+
 export class KagiMcpAgent extends McpAgent<Env> {
   server = new McpServer({
     name: "kagi-shinobi",
@@ -88,6 +93,43 @@ export class KagiMcpAgent extends McpAgent<Env> {
     if (isToolAvailable("kagi_enrich_web", mode)) this.registerEnrichWeb(client);
     if (isToolAvailable("kagi_enrich_news", mode)) this.registerEnrichNews(client);
     if (isToolAvailable("kagi_summarize_text", mode)) this.registerSummarizeText(client);
+    if (isToolAvailable("kagi_personalized_rank", mode)) this.registerRank(client);
+  }
+
+  private registerRank(client: KagiClient): void {
+    this.server.tool(
+      "kagi_personalized_rank",
+      RANK_DESCRIPTION,
+      {
+        urls: z.array(z.string().url()).min(1).max(20),
+        q: z.string().optional().describe("Query context. Required for impl=api."),
+        rules: z
+          .array(
+            z.object({
+              domain: z.string().optional(),
+              regex: z.string().optional(),
+              action: z.enum(["pin", "raise", "lower", "block"]),
+            }),
+          )
+          .optional()
+          .describe("Personalization rules. api-mode only; ignored in scrape mode."),
+        impl: z.enum(["scrape", "api"]).optional(),
+      },
+      async ({ urls, q, rules, impl }) => {
+        try {
+          const canonical = await client.rank({ urls, q, rules, impl });
+          const text = canonical.ranked
+            .map(
+              (r, i) =>
+                `${i + 1}. [${r.action}] score=${r.score.toFixed(2)} ${r.url}${r.rationale ? " — " + r.rationale : ""}`,
+            )
+            .join("\n");
+          return mcpResult({ text, structured: asStructured(canonical) });
+        } catch (err) {
+          return kagiErrorMcp(err);
+        }
+      },
+    );
   }
 
   private registerSummarizeUrl(client: KagiClient): void {

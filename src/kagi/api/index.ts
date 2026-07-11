@@ -22,6 +22,8 @@ import { apiFastGPT } from "./fastgpt.js";
 import { apiSummarize } from "./summarize.js";
 import { apiEnrichNews, apiEnrichWeb } from "./enrich.js";
 import { apiSmallWeb, type ApiSmallWebArgs } from "./smallweb.js";
+import { apiRank, type ApiRankArgs } from "./rank.js";
+import type { RankResponse } from "../types.js";
 
 export interface ApiSearchArgs {
   q: string;
@@ -117,6 +119,11 @@ export class KagiApiImpl {
   async smallWeb(args: ApiSmallWebArgs): Promise<SearchResponse> {
     this.client.requireConfigured();
     return apiSmallWeb(this.env, args);
+  }
+
+  async rank(args: ApiRankArgs): Promise<RankResponse> {
+    this.client.requireConfigured();
+    return apiRank(this.env, args);
   }
 }
 
