@@ -78,14 +78,15 @@ export const CAPABILITY_MATRIX: ToolCapability[] = [
     api_billable: false,
   },
   {
-    // Scrape impl arrives in a follow-up (kagi.com/fastgpt HTML/stream
-    // reverse-engineering). Api-only for S4.
+    // Scrape impl added via GET /stream_fastgpt (SSE) reverse-engineered
+    // from the frontend JS bundle at /asset/*/js/k_fgpt.js. Hybrid default
+    // is scrape (free) per the user directive: prefer the free path.
     tool: "kagi_fastgpt",
-    support: "api",
-    hybrid_prefer: "api",
-    expose_impl_param: false,
+    support: "both",
+    hybrid_prefer: "scrape",
+    expose_impl_param: true,
     api_billable: true,
-    api_cents_per_call: 1.5, // $15 / 1000
+    api_cents_per_call: 1.5, // $15 / 1000 on the paid API path
   },
   {
     tool: "kagi_summarize_url",

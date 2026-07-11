@@ -16,7 +16,8 @@ import { scrapeSearchToCanonical, scrapeSummarizeToCanonical } from "../normaliz
 import type { SearchResponse, SummarizeResponse, SummarizerEngine, SummaryStyle } from "../types.js";
 import { scrapeSmallWeb, type ScrapeSmallWebArgs } from "./smallweb.js";
 import { scrapeRank, type ScrapeRankArgs } from "./rank.js";
-import type { RankResponse } from "../types.js";
+import { scrapeFastGPT, type ScrapeFastGPTArgs } from "./fastgpt.js";
+import type { FastGPTResponse, RankResponse } from "../types.js";
 
 export interface ScrapeSearchArgs {
   q: string;
@@ -126,6 +127,17 @@ export class KagiScrapeClient {
   async rank(args: ScrapeRankArgs): Promise<RankResponse> {
     const { token } = await this.currentToken();
     return scrapeRank(args, token);
+  }
+
+  async fastGPT(args: ScrapeFastGPTArgs): Promise<FastGPTResponse> {
+    const { token } = await this.currentToken();
+    try {
+      return await scrapeFastGPT(args, token);
+    } catch (err) {
+      if (!(err instanceof KagiAuthError)) throw err;
+      const fresh = await this.refreshOrThrow("fastgpt 401/403");
+      return await scrapeFastGPT(args, fresh);
+    }
   }
 
   private async currentToken(): Promise<{

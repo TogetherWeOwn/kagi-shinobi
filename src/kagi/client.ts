@@ -122,7 +122,10 @@ export class KagiClient {
   }
 
   async fastGPT(args: FastGPTArgs): Promise<FastGPTResponse> {
-    pickImpl("kagi_fastgpt", this.mode); // enforces mode gate (api-only for now)
+    const impl = pickImpl("kagi_fastgpt", this.mode, args.impl);
+    if (impl === "scrape") {
+      return this.scrape.fastGPT({ query: args.query });
+    }
     return this.api.fastGPT({ query: args.query, cache: args.cache });
   }
 

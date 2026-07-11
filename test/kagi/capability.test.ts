@@ -98,7 +98,9 @@ describe("pickImpl", () => {
     expect(pickImpl("kagi_summarize_text", "hybrid")).toBe("api");
     expect(pickImpl("kagi_extract", "hybrid")).toBe("api");
     expect(pickImpl("kagi_list_lenses", "hybrid")).toBe("scrape");
-    expect(pickImpl("kagi_fastgpt", "hybrid")).toBe("api");
+    // kagi_fastgpt flipped from api-only to "both" once the scrape impl
+    // landed (GET /stream_fastgpt SSE). Hybrid prefers scrape now.
+    expect(pickImpl("kagi_fastgpt", "hybrid")).toBe("scrape");
   });
 
   it("hybrid respects a caller-supplied impl override", () => {

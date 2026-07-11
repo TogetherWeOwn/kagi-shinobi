@@ -509,11 +509,17 @@ export class KagiMcpAgent extends McpAgent<Env> {
         cache: z
           .boolean()
           .optional()
-          .describe("Allow a cached answer (default: true; cached responses are free)."),
+          .describe("Allow a cached answer (default: true; cached responses are free). API-only."),
+        impl: z
+          .enum(["scrape", "api"])
+          .optional()
+          .describe(
+            "Override which implementation handles this call. Hybrid default is scrape (free).",
+          ),
       },
-      async ({ query, cache }) => {
+      async ({ query, cache, impl }) => {
         try {
-          const canonical = await client.fastGPT({ query, cache });
+          const canonical = await client.fastGPT({ query, cache, impl });
           const text =
             canonical.answer +
             (canonical.references.length > 0
