@@ -1,80 +1,87 @@
-// High-level Kagi client used by both the MCP tools and the REST endpoints.
-// Adds token management on top of the raw search() / summarize() functions:
-//   1. Pull current token from KV (seeded from KAGI_SESSION_TOKEN secret).
-//   2. Call upstream.
-//   3. On KagiAuthError: mark KV entry stale, try Browser Rendering refresh
-//      (if enabled), retry ONCE with the fresh token, then give up.
+// KagiClient facade — the tri-mode dispatcher.
 //
-// The single retry cap keeps a bad password from thrashing the refresh loop.
+// Every call routes through `pickImpl(tool, mode, override)` in
+// capability.ts, so the routing rule is the same for every tool: unless the
+// operator forces `KAGI_MODE`, we run in `auto` and pick per the credentials
+// present. Hybrid mode obeys the operator's directive: scrape wherever the
+// scraper can serve; API for anything only the API can do.
+//
+// Downstream sprints add more methods here (fastgpt, extract, enrich, ...)
+// without touching the dispatcher shape.
 
 import type { Env } from "../env.js";
-import { KagiAuthError } from "./errors.js";
-import { search, type SearchResponse } from "./search.js";
-import { summarize, type SummarizeOptions, type SummarizeResponse } from "./summarize.js";
-import { loadToken, markStale } from "../token/store.js";
-import { refreshTokenViaBrowser } from "../token/refresh.js";
+import { pickImpl } from "./capability.js";
+import type { KagiMode, ModeResolution } from "./mode.js";
+import { resolveMode } from "./mode.js";
+import { KagiScrapeClient } from "./scrape/index.js";
+import { KagiApiImpl } from "./api/index.js";
+import type { ImplKind, SearchResponse, SummarizeResponse, SummarizerEngine, SummaryStyle } from "./types.js";
 
-export class TokenUnavailableError extends Error {
-  constructor(msg = "No Kagi session token available") {
-    super(msg);
-    this.name = "TokenUnavailableError";
+export interface SearchArgs {
+  q: string;
+  limit?: number;
+  impl?: ImplKind;
+}
+
+export interface SummarizeArgs {
+  kind: "url" | "text";
+  ref: string;
+  language: string;
+  style: SummaryStyle;
+  engine?: SummarizerEngine;
+  confirm_muriel?: boolean;
+  impl?: ImplKind;
+}
+
+export class KagiClient {
+  private scrape: KagiScrapeClient;
+  private api: KagiApiImpl;
+  readonly modeInfo: ModeResolution;
+
+  constructor(env: Env) {
+    this.modeInfo = resolveMode(env);
+    this.scrape = new KagiScrapeClient(env);
+    this.api = new KagiApiImpl(env);
+  }
+
+  get mode(): KagiMode {
+    return this.modeInfo.mode;
+  }
+
+  async search(args: SearchArgs): Promise<SearchResponse> {
+    const impl = pickImpl("kagi_search_fetch", this.mode, args.impl);
+    if (impl === "scrape") {
+      return this.scrape.search({ q: args.q, limit: args.limit });
+    }
+    return this.api.search({ q: args.q, limit: args.limit });
+  }
+
+  async summarize(args: SummarizeArgs): Promise<SummarizeResponse> {
+    const impl = pickImpl("kagi_summarizer", this.mode, args.impl);
+    if (impl === "scrape") {
+      return this.scrape.summarize({
+        kind: args.kind,
+        ref: args.ref,
+        language: args.language,
+        style: args.style,
+      });
+    }
+    return this.api.summarize({
+      kind: args.kind,
+      ref: args.ref,
+      language: args.language,
+      style: args.style,
+      engine: args.engine,
+      confirm_muriel: args.confirm_muriel,
+    });
   }
 }
 
-async function currentToken(env: Env): Promise<string> {
-  const envelope = await loadToken(env);
-  if (envelope && !envelope.stale) return envelope.token;
-
-  // No token or stale — try Browser Rendering bootstrap/refresh. This is the
-  // "auto get the token as needed" behavior: if there's nothing in KV and no
-  // KAGI_SESSION_TOKEN secret was seeded, we log into Kagi headlessly and
-  // populate KV on first request.
-  const result = await refreshTokenViaBrowser(env);
-  if (result.ok && result.token) return result.token;
-
-  if (envelope) return envelope.token; // Stale is better than nothing.
-  throw new TokenUnavailableError(
-    `No Kagi session token available and auto-refresh unavailable: ${result.reason ?? "unknown"}`,
-  );
+export function createKagiClient(env: Env): KagiClient {
+  return new KagiClient(env);
 }
 
-async function refreshOrThrow(env: Env, reason: string): Promise<string> {
-  await markStale(env, reason);
-  const result = await refreshTokenViaBrowser(env);
-  if (!result.ok || !result.token) {
-    throw new KagiAuthError(
-      `Kagi token stale and refresh unavailable: ${result.reason ?? "unknown"}`,
-    );
-  }
-  return result.token;
-}
-
-export async function searchWithAuth(
-  env: Env,
-  query: string,
-  limit?: number,
-): Promise<SearchResponse> {
-  const token = await currentToken(env);
-  try {
-    return await search(query, token, limit);
-  } catch (err) {
-    if (!(err instanceof KagiAuthError)) throw err;
-    const fresh = await refreshOrThrow(env, "search 401/403");
-    return await search(query, fresh, limit);
-  }
-}
-
-export async function summarizeWithAuth(
-  env: Env,
-  input: string,
-  options: SummarizeOptions,
-): Promise<SummarizeResponse> {
-  const token = await currentToken(env);
-  try {
-    return await summarize(input, token, options);
-  } catch (err) {
-    if (!(err instanceof KagiAuthError)) throw err;
-    const fresh = await refreshOrThrow(env, "summarize 401/403");
-    return await summarize(input, fresh, options);
-  }
-}
+// Transition-window re-exports so REST + MCP callers can migrate without a
+// giant find-and-replace inside this same PR. Removed once every internal
+// caller uses `createKagiClient()` directly.
+export { KagiNotConfiguredError as TokenUnavailableError } from "./errors.js";

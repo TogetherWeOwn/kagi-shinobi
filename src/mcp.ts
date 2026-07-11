@@ -1,25 +1,24 @@
-// Remote MCP server: exposes kagi_search_fetch and kagi_summarizer over
-// Streamable HTTP. Tool schemas + descriptions mirror czottmann/kagi-ken-mcp
-// so any client already configured for that server works with a URL swap.
+// Remote MCP server: exposes tools over Streamable HTTP.
 //
-// As of S1 both tools emit `structuredContent` alongside the legacy text
-// output. Downstream sprints layer richer tools (search, small_web, fastgpt,
-// extract, enrich, personalized_rank, deep_research) on top of the same
-// canonical shapes in src/kagi/types.ts.
+// S2 wires every tool through the KagiClient facade so the mode dispatcher
+// (scrape / api / hybrid / auto) runs on every call. `kagi_search_fetch`
+// and `kagi_summarizer` keep their original names + text output for
+// back-compat; downstream sprints layer richer tools on the same canonical
+// shapes in src/kagi/types.ts.
 
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Env } from "./env.js";
-import { searchWithAuth, summarizeWithAuth, TokenUnavailableError } from "./kagi/client.js";
-import { KagiAuthError } from "./kagi/errors.js";
-import { isSupportedLanguage, SUPPORTED_LANGUAGES } from "./kagi/languages.js";
-import type { SearchDataItem, SearchResultItem } from "./kagi/search.js";
-import type { SearchResponse, SummarizeResponse } from "./kagi/types.js";
+import { createKagiClient, type KagiClient } from "./kagi/client.js";
 import {
-  scrapeSearchToCanonical,
-  scrapeSummarizeToCanonical,
-} from "./kagi/normalize.js";
+  KagiConfirmRequiredError,
+  KagiError,
+  KagiNotConfiguredError,
+  KagiUnsupportedInModeError,
+} from "./kagi/errors.js";
+import { isSupportedLanguage, SUPPORTED_LANGUAGES } from "./kagi/languages.js";
+import type { SearchResponse } from "./kagi/types.js";
 import { asStructured, mcpResult } from "./mcp/result.js";
 
 const SEARCH_DESCRIPTION =
@@ -35,10 +34,16 @@ const SUMMARIZE_DESCRIPTION =
 export class KagiMcpAgent extends McpAgent<Env> {
   server = new McpServer({
     name: "kagi-shinobi",
-    version: "0.2.0",
+    version: "0.2.0-dev",
   });
 
   async init(): Promise<void> {
+    const client = createKagiClient(this.env);
+    this.registerSearchFetch(client);
+    this.registerSummarizer(client);
+  }
+
+  private registerSearchFetch(client: KagiClient): void {
     this.server.tool(
       "kagi_search_fetch",
       SEARCH_DESCRIPTION,
@@ -56,36 +61,34 @@ export class KagiMcpAgent extends McpAgent<Env> {
           .max(50)
           .optional()
           .describe("Maximum number of search results per query (default: 10, max: 50)"),
+        impl: z
+          .enum(["scrape", "api"])
+          .optional()
+          .describe(
+            "Override which implementation handles this call. Ignored in single-impl modes.",
+          ),
       },
-      async ({ queries, limit }) => {
+      async ({ queries, limit, impl }) => {
         const cap = limit ?? 10;
-        const startedAt = Date.now();
         const settled = await Promise.allSettled(
-          queries.map((q) => searchWithAuth(this.env, q, cap)),
+          queries.map((q) => client.search({ q, limit: cap, impl })),
         );
 
-        const perQuery: SearchResponse[] = [];
+        const perQuery: (SearchResponse | null)[] = [];
         const errors: Array<{ query: string; error: string }> = [];
-        const responses: Array<SearchDataItem[] | null> = [];
 
         for (let i = 0; i < queries.length; i++) {
           const s = settled[i];
           const q = queries[i];
           if (s.status === "fulfilled") {
-            responses.push(s.value.data);
-            perQuery.push(
-              scrapeSearchToCanonical(q, s.value.data, {
-                impl: "scrape",
-                start_ms: startedAt,
-              }),
-            );
+            perQuery.push(s.value);
           } else {
-            responses.push(null);
+            perQuery.push(null);
             errors.push({ query: q, error: describeError(s.reason) });
           }
         }
 
-        let text = formatSearchResults(queries, responses);
+        let text = formatSearchResults(queries, perQuery);
         if (errors.length > 0) {
           text += `\n\nErrors encountered:\n${errors
             .map((e) => `Query "${e.query}": ${e.error}`)
@@ -94,11 +97,17 @@ export class KagiMcpAgent extends McpAgent<Env> {
 
         return mcpResult({
           text,
-          structured: { queries: perQuery as unknown[], errors },
+          structured: {
+            queries: perQuery.filter((r): r is SearchResponse => r !== null),
+            errors,
+            mode: client.mode,
+          },
         });
       },
     );
+  }
 
+  private registerSummarizer(client: KagiClient): void {
     this.server.tool(
       "kagi_summarizer",
       SUMMARIZE_DESCRIPTION,
@@ -116,9 +125,14 @@ export class KagiMcpAgent extends McpAgent<Env> {
           .describe(
             "Desired output language. Two-letter code (e.g. 'EN'). Defaults to the document's original language.",
           ),
+        impl: z
+          .enum(["scrape", "api"])
+          .optional()
+          .describe(
+            "Override which implementation handles this call. Ignored in single-impl modes.",
+          ),
       },
-      async ({ url, summary_type, target_language }) => {
-        const startedAt = Date.now();
+      async ({ url, summary_type, target_language, impl }) => {
         try {
           const language = target_language ?? "EN";
           if (target_language && !isSupportedLanguage(target_language)) {
@@ -131,21 +145,15 @@ export class KagiMcpAgent extends McpAgent<Env> {
               isError: true,
             });
           }
-          const result = await summarizeWithAuth(this.env, url, {
-            type: summary_type,
-            language,
-            isUrl: true,
-          });
-          const canonical: SummarizeResponse = scrapeSummarizeToCanonical(result, {
-            ref: url,
+          const canonical = await client.summarize({
             kind: "url",
+            ref: url,
             language,
             style: summary_type,
-            engine: "scrape-default",
-            metaInit: { impl: "scrape", start_ms: startedAt },
+            impl,
           });
           return mcpResult({
-            text: result.data.output || "",
+            text: canonical.summary || "",
             structured: asStructured(canonical),
           });
         } catch (err) {
@@ -161,15 +169,16 @@ export class KagiMcpAgent extends McpAgent<Env> {
 }
 
 function describeError(reason: unknown): string {
-  if (reason instanceof TokenUnavailableError) return "kagi token missing";
-  if (reason instanceof KagiAuthError) return "kagi token stale";
+  if (reason instanceof KagiError) return reason.message;
   if (reason instanceof Error) return reason.message;
   return String(reason);
 }
 
 function errorKind(reason: unknown): string {
-  if (reason instanceof TokenUnavailableError) return "token_missing";
-  if (reason instanceof KagiAuthError) return "auth";
+  if (reason instanceof KagiConfirmRequiredError) return "confirm_required";
+  if (reason instanceof KagiUnsupportedInModeError) return "unsupported_in_mode";
+  if (reason instanceof KagiNotConfiguredError) return "not_configured";
+  if (reason instanceof KagiError) return reason.kind;
   return "internal";
 }
 
@@ -177,22 +186,21 @@ function errorKind(reason: unknown): string {
 // output for numbered results keep working.
 function formatSearchResults(
   queries: string[],
-  responses: Array<SearchDataItem[] | null>,
+  responses: (SearchResponse | null)[],
 ): string {
   const chunks: string[] = [];
   let startIndex = 1;
   for (let i = 0; i < queries.length; i++) {
-    const items = (responses[i] ?? []).filter(
-      (it): it is SearchResultItem => it.t === 0,
-    );
-    const lines = items.map((r, idx) => {
+    const resp = responses[i];
+    const results = resp?.results ?? [];
+    const lines = results.map((r, idx) => {
       const n = startIndex + idx;
       return `${n}: ${r.title || "No Title"}
 ${r.url}
-Published Date: Not Available
+Published Date: ${r.published_at ?? "Not Available"}
 ${r.snippet || "No snippet available"}`;
     });
-    startIndex += items.length;
+    startIndex += results.length;
     chunks.push(`-----
 Results for search query "${queries[i]}":
 -----
