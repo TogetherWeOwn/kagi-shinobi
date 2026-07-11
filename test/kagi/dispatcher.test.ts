@@ -108,28 +108,15 @@ describe("KagiClient facade routing", () => {
   });
 });
 
-describe("api impl stub (S2)", () => {
-  it("api-mode search rejects with KagiNotConfiguredError until S3", async () => {
-    // Restore real impls for this test so we hit the stub, not the mock.
+describe("api impl configuration errors", () => {
+  it("api-mode search without KAGI_API_KEY throws KagiNotConfiguredError", async () => {
     vi.restoreAllMocks();
-    const client = new KagiClient(
-      env({ KAGI_MODE: "api", KAGI_API_KEY: "k" }),
-    );
+    const client = new KagiClient(env({ KAGI_MODE: "api", KAGI_API_KEY: "" }));
+    // resolveMode succeeds because KAGI_MODE=api is explicit, but the client
+    // itself refuses when it's not actually configured.
+    // (Empty-string API key resolves to KAGI_MODE=api since it was explicit.)
     await expect(client.search({ q: "hi" })).rejects.toBeInstanceOf(
       KagiNotConfiguredError,
     );
-  });
-
-  it("api-mode summarize rejects with KagiNotConfiguredError until S3", async () => {
-    vi.restoreAllMocks();
-    const client = new KagiClient(env({ KAGI_MODE: "api", KAGI_API_KEY: "k" }));
-    await expect(
-      client.summarize({
-        kind: "url",
-        ref: "https://example.com",
-        language: "EN",
-        style: "summary",
-      }),
-    ).rejects.toBeInstanceOf(KagiNotConfiguredError);
   });
 });

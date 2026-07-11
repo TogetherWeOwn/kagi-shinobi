@@ -6,8 +6,7 @@
 // present. Hybrid mode obeys the operator's directive: scrape wherever the
 // scraper can serve; API for anything only the API can do.
 //
-// Downstream sprints add more methods here (fastgpt, extract, enrich, ...)
-// without touching the dispatcher shape.
+// Downstream sprints extend the facade without touching the dispatcher shape.
 
 import type { Env } from "../env.js";
 import { pickImpl } from "./capability.js";
@@ -15,11 +14,26 @@ import type { KagiMode, ModeResolution } from "./mode.js";
 import { resolveMode } from "./mode.js";
 import { KagiScrapeClient } from "./scrape/index.js";
 import { KagiApiImpl } from "./api/index.js";
-import type { ImplKind, SearchResponse, SummarizeResponse, SummarizerEngine, SummaryStyle } from "./types.js";
+import type {
+  EnrichResponse,
+  ExtractResponse,
+  FastGPTResponse,
+  ImplKind,
+  SearchResponse,
+  SummarizeResponse,
+  SummarizerEngine,
+  SummaryStyle,
+} from "./types.js";
 
 export interface SearchArgs {
   q: string;
   limit?: number;
+  lens_id?: string;
+  workflow?: "web" | "news" | "images" | "videos" | "podcasts";
+  include_domains?: string[];
+  exclude_domains?: string[];
+  date_range?: { from?: string; to?: string };
+  safe_search?: boolean;
   impl?: ImplKind;
 }
 
@@ -31,6 +45,22 @@ export interface SummarizeArgs {
   engine?: SummarizerEngine;
   confirm_muriel?: boolean;
   impl?: ImplKind;
+}
+
+export interface FastGPTArgs {
+  query: string;
+  cache?: boolean;
+  impl?: ImplKind;
+}
+
+export interface ExtractArgs {
+  urls: string[];
+  format?: "markdown" | "text";
+  timeout_ms?: number;
+}
+
+export interface EnrichArgs {
+  q: string;
 }
 
 export class KagiClient {
@@ -53,11 +83,24 @@ export class KagiClient {
     if (impl === "scrape") {
       return this.scrape.search({ q: args.q, limit: args.limit });
     }
-    return this.api.search({ q: args.q, limit: args.limit });
+    return this.api.search({
+      q: args.q,
+      limit: args.limit,
+      lens_id: args.lens_id,
+      workflow: args.workflow,
+      include_domains: args.include_domains,
+      exclude_domains: args.exclude_domains,
+      date_range: args.date_range,
+      safe_search: args.safe_search,
+    });
   }
 
   async summarize(args: SummarizeArgs): Promise<SummarizeResponse> {
-    const impl = pickImpl("kagi_summarizer", this.mode, args.impl);
+    // kagi_summarize_text is api-only per capability.ts; pickImpl enforces
+    // the mode check. For URL summaries in "both"-supporting modes we honor
+    // the caller's impl override.
+    const tool = args.kind === "text" ? "kagi_summarize_text" : "kagi_summarize_url";
+    const impl = pickImpl(tool, this.mode, args.impl);
     if (impl === "scrape") {
       return this.scrape.summarize({
         kind: args.kind,
@@ -74,6 +117,32 @@ export class KagiClient {
       engine: args.engine,
       confirm_muriel: args.confirm_muriel,
     });
+  }
+
+  /**
+   * FastGPT. Scrape impl is stubbed until S4 — call in scrape mode returns
+   * KagiNotConfiguredError. In S3 the tool is not yet registered on the MCP
+   * surface; only internal composition (e.g. S8 deep research) reaches this.
+   */
+  async fastGPT(args: FastGPTArgs): Promise<FastGPTResponse> {
+    // Deliberately bypass pickImpl until S4 flips kagi_fastgpt to "both".
+    // Until then this is api-only.
+    return this.api.fastGPT({ query: args.query, cache: args.cache });
+  }
+
+  async extract(args: ExtractArgs): Promise<ExtractResponse> {
+    pickImpl("kagi_extract", this.mode); // enforces mode gate
+    return this.api.extract(args);
+  }
+
+  async enrichWeb(args: EnrichArgs): Promise<EnrichResponse> {
+    pickImpl("kagi_enrich_web", this.mode);
+    return this.api.enrichWeb(args);
+  }
+
+  async enrichNews(args: EnrichArgs): Promise<EnrichResponse> {
+    pickImpl("kagi_enrich_news", this.mode);
+    return this.api.enrichNews(args);
   }
 }
 
