@@ -11,18 +11,14 @@
 
   "durable_objects": {
     "bindings": [
-      {
-        "name": "MCP_OBJECT",
-        "class_name": "KagiMcpAgent"
-      }
+      { "name": "MCP_OBJECT", "class_name": "KagiMcpAgent" },
+      { "name": "RESEARCH_RUN", "class_name": "ResearchRun" }
     ]
   },
 
   "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["KagiMcpAgent"]
-    }
+    { "tag": "v1", "new_sqlite_classes": ["KagiMcpAgent"] },
+    { "tag": "v2", "new_sqlite_classes": ["ResearchRun"] }
   ],
 
   "kv_namespaces": [

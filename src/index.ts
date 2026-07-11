@@ -9,8 +9,9 @@ import { handleAdminRefresh, handleAdminToken, handleHealth } from "./token/admi
 import { KagiMcpAgent } from "./mcp.js";
 import { landingResponse } from "./landing.js";
 import { checkAndIncrement } from "./util/ratelimit.js";
+import { ResearchRun } from "./research/run.js";
 
-export { KagiMcpAgent };
+export { KagiMcpAgent, ResearchRun };
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {

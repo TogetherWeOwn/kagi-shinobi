@@ -21,6 +21,7 @@ import {
 import { isSupportedLanguage, SUPPORTED_LANGUAGES } from "./kagi/languages.js";
 import type { SearchResponse } from "./kagi/types.js";
 import { asStructured, mcpError, mcpResult } from "./mcp/result.js";
+import { getResearchStub } from "./research/run.js";
 
 const SEARCH_DESCRIPTION =
   "Fetch web results based on one or more queries using the Kagi.com web search engine. " +
@@ -69,6 +70,25 @@ const RANK_DESCRIPTION =
   "for the account. Scrape mode uses site: probes against the account's saved " +
   "block/promote lists. API mode accepts explicit rules[] with domain + action.";
 
+const RESEARCH_CREATE_DESCRIPTION =
+  "Start a deep-research run that decomposes a question into sub-queries, " +
+  "searches Kagi, extracts / summarizes top sources, and synthesizes a " +
+  "cited report. Returns a run_id — use kagi_research_wait_for_run and " +
+  "kagi_research_get_output to check progress. Set budget_cents (default 0, " +
+  "meaning free scrape-only) to allow paid API calls.";
+
+const RESEARCH_WAIT_DESCRIPTION =
+  "Block until the run reaches a terminal state (done / failed / cancelled) " +
+  "or timeout_seconds elapses. Returns the current run state either way.";
+
+const RESEARCH_OUTPUT_DESCRIPTION =
+  "Get the current state + report of a research run. Safe to call any time; " +
+  "returns partial data if the run is still in progress.";
+
+const RESEARCH_CANCEL_DESCRIPTION =
+  "Cancel a running research job. Idempotent. Any partial output collected " +
+  "so far remains available via kagi_research_get_output.";
+
 export class KagiMcpAgent extends McpAgent<Env> {
   server = new McpServer({
     name: "kagi-shinobi",
@@ -94,6 +114,114 @@ export class KagiMcpAgent extends McpAgent<Env> {
     if (isToolAvailable("kagi_enrich_news", mode)) this.registerEnrichNews(client);
     if (isToolAvailable("kagi_summarize_text", mode)) this.registerSummarizeText(client);
     if (isToolAvailable("kagi_personalized_rank", mode)) this.registerRank(client);
+
+    // Deep research trio + cancel. Available in every mode — the pipeline
+    // will use whatever impls are reachable and fall back to scrape when
+    // budget_cents=0 (the safe default).
+    this.registerResearchCreate();
+    this.registerResearchWait();
+    this.registerResearchOutput();
+    this.registerResearchCancel();
+  }
+
+  private registerResearchCreate(): void {
+    this.server.tool(
+      "kagi_research_create_run",
+      RESEARCH_CREATE_DESCRIPTION,
+      {
+        question: z.string().min(1),
+        depth: z.number().int().min(1).max(3).optional(),
+        budget_cents: z
+          .number()
+          .min(0)
+          .optional()
+          .describe("Max API cents this run may spend. Default 0 (scrape-only)."),
+        allow_api: z.boolean().optional(),
+      },
+      async ({ question, depth, budget_cents, allow_api }) => {
+        try {
+          const stub = getResearchStub(this.env);
+          const result = await stub.createRun({
+            question,
+            depth: depth ?? 1,
+            budget_cents: budget_cents ?? 0,
+            allow_api: allow_api ?? true,
+          });
+          return mcpResult({
+            text: `Started run ${result.run_id}. Poll with kagi_research_wait_for_run.`,
+            structured: { run_id: result.run_id },
+          });
+        } catch (err) {
+          return kagiErrorMcp(err);
+        }
+      },
+    );
+  }
+
+  private registerResearchWait(): void {
+    this.server.tool(
+      "kagi_research_wait_for_run",
+      RESEARCH_WAIT_DESCRIPTION,
+      {
+        run_id: z.string().min(1),
+        timeout_seconds: z.number().int().min(1).max(300).default(30),
+      },
+      async ({ run_id, timeout_seconds }) => {
+        try {
+          const stub = getResearchStub(this.env);
+          const state = await stub.waitForRun(run_id, timeout_seconds);
+          if (!state) return mcpError({ kind: "not_found", message: `run ${run_id} not found` });
+          return mcpResult({
+            text: `Status: ${state.status} (${state.cost_cents.toFixed(2)}¢ spent)`,
+            structured: asStructured(state),
+          });
+        } catch (err) {
+          return kagiErrorMcp(err);
+        }
+      },
+    );
+  }
+
+  private registerResearchOutput(): void {
+    this.server.tool(
+      "kagi_research_get_output",
+      RESEARCH_OUTPUT_DESCRIPTION,
+      { run_id: z.string().min(1) },
+      async ({ run_id }) => {
+        try {
+          const stub = getResearchStub(this.env);
+          const state = await stub.getOutput(run_id);
+          if (!state) return mcpError({ kind: "not_found", message: `run ${run_id} not found` });
+          const text =
+            state.status === "done"
+              ? state.report_markdown
+              : `Status: ${state.status}${state.error ? ` — ${state.error}` : ""}`;
+          return mcpResult({ text, structured: asStructured(state) });
+        } catch (err) {
+          return kagiErrorMcp(err);
+        }
+      },
+    );
+  }
+
+  private registerResearchCancel(): void {
+    this.server.tool(
+      "kagi_research_cancel_run",
+      RESEARCH_CANCEL_DESCRIPTION,
+      { run_id: z.string().min(1) },
+      async ({ run_id }) => {
+        try {
+          const stub = getResearchStub(this.env);
+          const result = await stub.cancelRun(run_id);
+          return mcpResult({
+            text: result.cancelled ? "Cancelled." : "Run was already terminal or not found.",
+            structured: { ...result },
+          });
+        } catch (err) {
+          return kagiErrorMcp(err);
+        }
+      },
+    );
   }
 
   private registerRank(client: KagiClient): void {
