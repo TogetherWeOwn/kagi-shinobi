@@ -102,6 +102,43 @@ describe("the bearer gate is wired in front of every other route", () => {
     expect(res.status).toBe(401);
   });
 
+  // The tests above prove each route is *gated*; they stop at the 401 and so
+  // never execute the dispatch line itself. These authenticate through, and
+  // assert only that the request reached a handler — what each handler then
+  // does is pinned by test/rest.test.ts and test/token/admin.test.ts.
+  it.each([
+    ["POST", "/summarize"],
+    ["POST", "/admin/refresh"],
+    ["POST", "/search"],
+    ["POST", "/admin/token"],
+  ])("%s %s dispatches to its handler once authenticated", async (method, path) => {
+    const res = await call(path, {
+      method,
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: "{}",
+    });
+
+    expect(res.status).not.toBe(401);
+    expect(res.status).not.toBe(404);
+  });
+
+  it("routes /mcp to the MCP agent rather than falling through to 404", async () => {
+    const res = await call("/mcp", { method: "GET", headers: auth });
+
+    expect(res.status).not.toBe(404);
+  });
+
+  it("routes a nested /mcp/ path to the same agent", async () => {
+    // The agent answers 404 for a sub-path it does not serve, so status alone
+    // cannot tell "handed to the agent" from "fell through the route table".
+    // The worker's own miss is a jsonError envelope with code=not-found.
+    const res = await call("/mcp/message", { method: "GET", headers: auth });
+    const body = await res.text();
+
+    expect(body).not.toContain("not-found");
+    expect(body).not.toContain("not routed");
+  });
+
   it("an unmatched path returns 404 once authenticated, not 401", async () => {
     // Proves the 401s above come from the gate rather than from the route
     // table simply not matching.

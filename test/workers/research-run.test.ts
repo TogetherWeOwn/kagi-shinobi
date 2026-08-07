@@ -8,6 +8,7 @@
 
 import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { getResearchStub } from "../../src/research/run";
 
 const mocks = vi.hoisted(() => ({
   runPipeline: vi.fn(),
@@ -393,6 +394,22 @@ describe("waitForRun", () => {
       expect((await instance.waitForRun("run-cancelled", 30))?.status).toBe("cancelled");
       expect((await instance.waitForRun("run-failed", 30))?.status).toBe("failed");
     });
+  });
+});
+
+describe("getResearchStub", () => {
+  it("always addresses the same singleton instance", async () => {
+    const a = getResearchStub(env);
+    const b = getResearchStub(env);
+
+    // One DO holds every run, so cost tracking and cross-run lookups stay in
+    // one place. Two calls must land on the same actor.
+    expect(a.id.equals(b.id)).toBe(true);
+    expect(a.id.equals(env.RESEARCH_RUN.idFromName("singleton"))).toBe(true);
+  });
+
+  it("returns a usable stub", async () => {
+    expect(await getResearchStub(env).getOutput("never-created")).toBeNull();
   });
 });
 

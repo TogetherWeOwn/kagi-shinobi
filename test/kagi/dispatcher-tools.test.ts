@@ -6,7 +6,7 @@
 // enforces itself rather than delegating to capability.ts.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { KagiClient } from "../../src/kagi/client";
+import { createKagiClient, KagiClient } from "../../src/kagi/client";
 import { KagiScrapeClient } from "../../src/kagi/scrape/index";
 import { KagiApiImpl } from "../../src/kagi/api/index";
 import type { Env } from "../../src/env";
@@ -46,6 +46,20 @@ function spyPair(method: string) {
     .mockImplementation(async () => ({ via: "api" }));
   return { scrape, api };
 }
+
+describe("createKagiClient", () => {
+  it("builds a client with the mode resolved from env", () => {
+    const client = createKagiClient({
+      ADMIN_TOKEN: "x",
+      KAGI_MODE: "hybrid",
+      KAGI_SESSION_TOKEN: "s",
+      KAGI_API_KEY: "k",
+    } as Env);
+
+    expect(client).toBeInstanceOf(KagiClient);
+    expect(client.mode).toBe("hybrid");
+  });
+});
 
 describe("mode exposure", () => {
   it("exposes the resolved mode and the reason behind it", () => {

@@ -550,6 +550,108 @@ describe("the research trio", () => {
   });
 });
 
+// The mapping is proved against one tool below. This block proves every other
+// handler is actually wrapped — an unguarded tool would reject the MCP call
+// instead of returning a structured error the client can branch on.
+describe("every tool wraps its failure in the MCP error envelope", () => {
+  const boom = () => vi.fn().mockRejectedValue(new KagiAuthError());
+
+  // kagi_search_fetch is deliberately absent: it settles each query
+  // independently and reports per-query failures inside a normal result, so a
+  // rejecting client never reaches its catch. That contract has its own test
+  // ("appends an error section for a failed query without dropping the rest").
+  it.each([
+    [
+      "kagi_summarizer",
+      { url: "https://example.test/a" },
+      "scrape",
+      () => ({ summarize: boom() }),
+    ],
+    [
+      "kagi_summarize_url",
+      { url: "https://example.test/a" },
+      "scrape",
+      () => ({ summarize: boom() }),
+    ],
+    ["kagi_summarize_text", { text: "a passage" }, "api", () => ({ summarize: boom() })],
+    ["kagi_small_web", {}, "scrape", () => ({ smallWeb: boom() })],
+    [
+      "kagi_personalized_rank",
+      { urls: ["https://example.test/a"] },
+      "scrape",
+      () => ({ rank: boom() }),
+    ],
+    ["kagi_extract", { urls: ["https://example.test/a"] }, "api", () => ({ extract: boom() })],
+    ["kagi_enrich_web", { q: "topic" }, "api", () => ({ enrichWeb: boom() })],
+    ["kagi_enrich_news", { q: "topic" }, "api", () => ({ enrichNews: boom() })],
+  ] as Array<[string, Record<string, unknown>, string, () => Record<string, unknown>]>)(
+    "%s",
+    async (tool, args, mode, overrides) => {
+      const result = await call(tool, args, mode, overrides());
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent?.error_kind).toBe("auth");
+    },
+  );
+});
+
+describe("kagi_summarize_text language validation", () => {
+  it("refuses an unsupported target_language before spending anything", async () => {
+    const summarize = vi.fn();
+
+    const result = await call(
+      "kagi_summarize_text",
+      { text: "a passage", target_language: "KLINGON" },
+      "api",
+      { summarize },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent?.error_kind).toBe("invalid_language");
+    expect(summarize).not.toHaveBeenCalled();
+  });
+
+  it("lists the supported codes so the caller can retry", async () => {
+    const result = await call(
+      "kagi_summarize_text",
+      { text: "a passage", target_language: "KLINGON" },
+      "api",
+    );
+
+    // mcpError spreads `detail` flat into structuredContent, so the supported
+    // list sits alongside error_kind rather than nested under it.
+    const supported = result.structuredContent?.supported as string[];
+    expect(supported).toContain("EN");
+    expect(supported).toContain("ZH-HANT");
+  });
+
+  it("defaults to EN when target_language is omitted", async () => {
+    const summarize = vi.fn().mockResolvedValue({ summary: "s" });
+
+    await call("kagi_summarize_text", { text: "a passage" }, "api", { summarize });
+
+    expect(summarize).toHaveBeenCalledWith(expect.objectContaining({ language: "EN" }));
+  });
+});
+
+describe("the research tools wrap Durable Object failures too", () => {
+  it.each([
+    ["kagi_research_create_run", { question: "why" }, "createRun"],
+    ["kagi_research_wait_for_run", { run_id: "run-1", timeout_seconds: 1 }, "waitForRun"],
+    ["kagi_research_get_output", { run_id: "run-1" }, "getOutput"],
+    ["kagi_research_cancel_run", { run_id: "run-1" }, "cancelRun"],
+  ])("%s", async (tool, args, method) => {
+    getResearchStub.mockReturnValue(
+      researchStub({ [method]: vi.fn().mockRejectedValue(new Error("DO unreachable")) }),
+    );
+
+    const result = await call(tool, args);
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent?.error_kind).toBe("internal");
+  });
+});
+
 // The error_kind field is what an MCP client branches on, so the mapping is a
 // contract in its own right.
 describe("kagiErrorMcp", () => {
