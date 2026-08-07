@@ -277,9 +277,10 @@ describe("kagi_summarizer", () => {
     expect(client.summarize).toHaveBeenCalledWith(expect.objectContaining({ language: "EN" }));
   });
 
-  // Note this one returns a soft isError result rather than the mcpError
-  // envelope kagi_summarize_url uses for the same condition.
-  it("rejects an unsupported target_language as a soft error", async () => {
+  // This branch used to hand-roll its own result shape while the tool's own
+  // catch block already used the mcpError envelope — so a caller parsed one
+  // shape for a rejected language and another for an expired token. ADR 0010.
+  it("rejects an unsupported target_language with the same envelope as every other tool", async () => {
     const result = await call("kagi_summarizer", {
       url: "https://example.test/a",
       target_language: "XX",
@@ -287,7 +288,28 @@ describe("kagi_summarizer", () => {
 
     expect(result.isError).toBe(true);
     expect(result.structuredContent?.error_kind).toBe("invalid_language");
-    expect(text(result)).toContain("unsupported target_language 'XX'");
+    // The field the hand-rolled shape dropped.
+    expect(result.structuredContent?.message).toContain("unsupported target_language 'XX'");
+    expect(result.structuredContent?.supported).toBeDefined();
+    expect(text(result)).toBe("Error [invalid_language]: unsupported target_language 'XX'");
+  });
+
+  it("reports a rejected language and a failed call through the same shape", async () => {
+    // The inconsistency ADR 0010 removes was internal to this one tool.
+    const rejected = await call("kagi_summarizer", {
+      url: "https://example.test/a",
+      target_language: "XX",
+    });
+    const failed = await call("kagi_summarizer", { url: "https://example.test/a" }, "scrape", {
+      summarize: vi.fn().mockRejectedValue(new KagiAuthError("token expired")),
+    });
+
+    for (const result of [rejected, failed]) {
+      expect(result.isError).toBe(true);
+      expect(typeof result.structuredContent?.error_kind).toBe("string");
+      expect(typeof result.structuredContent?.message).toBe("string");
+      expect(text(result)).toMatch(/^Error \[[a-z_]+\]: /);
+    }
   });
 
   it("maps a client error onto the MCP error envelope", async () => {
