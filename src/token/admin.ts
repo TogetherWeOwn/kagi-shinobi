@@ -28,7 +28,9 @@ export async function handleAdminToken(request: Request, env: Env): Promise<Resp
 }
 
 export async function handleAdminRefresh(_request: Request, env: Env): Promise<Response> {
-  const result = await refreshTokenViaBrowser(env);
+  // force: an operator asking for a refresh explicitly should not be turned
+  // away because an automatic attempt holds the lease.
+  const result = await refreshTokenViaBrowser(env, { force: true });
   if (!result.ok) {
     return jsonError(503, "refresh-failed", result.reason ?? "unknown refresh error");
   }

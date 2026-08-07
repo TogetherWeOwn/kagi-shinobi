@@ -24,16 +24,69 @@ interface RefreshResult {
 
 let inflight: Promise<RefreshResult> | null = null;
 
-export async function refreshTokenViaBrowser(env: Env): Promise<RefreshResult> {
-  // Single-flight: coalesce concurrent refresh triggers into one browser session.
+/**
+ * How long one refresh attempt reserves the right to run. Matches the token
+ * cache TTL in store.ts for the same reason: 60s is how long a rotation can
+ * stay invisible to another isolate, so it is exactly the window in which a
+ * second refresh would be redundant.
+ */
+const LEASE_MS = 60_000;
+
+export interface RefreshOptions {
+  /**
+   * Skip the lease check. For POST /admin/refresh, where an operator has
+   * explicitly asked for a refresh and should not be made to wait behind an
+   * automatic one.
+   */
+  force?: boolean;
+}
+
+export async function refreshTokenViaBrowser(
+  env: Env,
+  opts: RefreshOptions = {},
+): Promise<RefreshResult> {
+  // Single-flight: coalesce concurrent refresh triggers into one browser
+  // session. This is per-isolate; the lease below covers the other isolates.
   if (inflight) return inflight;
-  inflight = doRefresh(env).finally(() => {
+  inflight = doRefresh(env, opts).finally(() => {
     inflight = null;
   });
   return inflight;
 }
 
-async function doRefresh(env: Env): Promise<RefreshResult> {
+/**
+ * Cross-isolate single-flight. `inflight` above only sees this isolate, and a
+ * token rotation stays invisible to the others for up to KV's propagation
+ * window — long enough for each of them to read the same lingering
+ * `stale: true` and launch its own browser. Browser Rendering is billable and
+ * capped at a small number of concurrent sessions per account, so that
+ * stampede costs money and then fails.
+ *
+ * Fails CLOSED: if the Meter is unreachable we cannot coordinate, and an
+ * uncoordinated refresh is the thing being prevented. ADR 0006 takes the same
+ * position for the spend counter.
+ */
+async function takeRefreshLease(
+  env: Env,
+  force: boolean,
+): Promise<{ granted: boolean; reason?: string }> {
+  try {
+    const stub = env.METER.get(env.METER.idFromName("refresh"));
+    const verdict = await stub.tryRefreshLease(Date.now(), LEASE_MS, force);
+    if (verdict.acquired) return { granted: true };
+
+    const seconds = Math.max(1, Math.ceil(verdict.retry_after_ms / 1000));
+    return {
+      granted: false,
+      reason: `another refresh holds the lease; retry in ${seconds}s`,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { granted: false, reason: `cannot coordinate refresh: ${msg}` };
+  }
+}
+
+async function doRefresh(env: Env, opts: RefreshOptions): Promise<RefreshResult> {
   if (env.AUTO_REFRESH_ENABLED !== "true") {
     return { ok: false, reason: "auto-refresh disabled" };
   }
@@ -42,6 +95,14 @@ async function doRefresh(env: Env): Promise<RefreshResult> {
   }
   if (!env.KAGI_EMAIL || !env.KAGI_PASSWORD) {
     return { ok: false, reason: "KAGI_EMAIL/KAGI_PASSWORD not set" };
+  }
+
+  // Only after the free checks — an unreachable Meter must not stop us from
+  // reporting a plain misconfiguration.
+  const lease = await takeRefreshLease(env, opts.force === true);
+  if (!lease.granted) {
+    logInfo("browser-refresh: skipped", { reason: lease.reason });
+    return { ok: false, reason: lease.reason };
   }
 
   logInfo("browser-refresh: starting");

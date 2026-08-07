@@ -31,6 +31,7 @@ class MemKV {
 class MemMeter {
   private rate = new Map<number, number>();
   private spend = new Map<string, number>();
+  private leaseUntil = 0;
 
   checkRate(limit: number, minute: number, msIntoMinute: number) {
     if (limit <= 0) return { allowed: true, limit_rpm: 0, count: 0 };
@@ -64,6 +65,14 @@ class MemMeter {
 
   spendSnapshot(month: string) {
     return this.spend.get(month) ?? 0;
+  }
+
+  tryRefreshLease(nowMs: number, leaseMs: number, force = false) {
+    if (!force && nowMs < this.leaseUntil) {
+      return { acquired: false, retry_after_ms: this.leaseUntil - nowMs };
+    }
+    this.leaseUntil = nowMs + leaseMs;
+    return { acquired: true, retry_after_ms: 0 };
   }
 }
 

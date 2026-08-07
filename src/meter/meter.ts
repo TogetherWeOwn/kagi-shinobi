@@ -33,6 +33,15 @@ export interface SpendVerdict {
   cap_cents: number;
 }
 
+export interface RefreshLeaseVerdict {
+  acquired: boolean;
+  /** 0 when acquired; otherwise how long until the held lease expires. */
+  retry_after_ms: number;
+}
+
+/** Single-row key for the browser-refresh lease. */
+const REFRESH_LEASE = "refresh";
+
 export class Meter extends DurableObject<Env> {
   constructor(state: DurableObjectState, env: Env) {
     super(state, env);
@@ -48,6 +57,12 @@ export class Meter extends DurableObject<Env> {
         `CREATE TABLE IF NOT EXISTS spend (
           month TEXT PRIMARY KEY,
           cents REAL NOT NULL
+        )`,
+      );
+      this.ctx.storage.sql.exec(
+        `CREATE TABLE IF NOT EXISTS lease (
+          name TEXT PRIMARY KEY,
+          until INTEGER NOT NULL
         )`,
       );
     });
@@ -110,6 +125,44 @@ export class Meter extends DurableObject<Env> {
 
   spendSnapshot(month: string): number {
     return this.readSpendRow(month);
+  }
+
+  /**
+   * Take the global browser-refresh lease, or refuse if someone holds it.
+   *
+   * `inflight` in src/token/refresh.ts coalesces refreshes within one isolate
+   * only. A rotation is invisible to other isolates for up to KV's propagation
+   * window, and each of them reads the lingering `stale: true` as a reason to
+   * launch its own Browser Rendering session — billable, slow, and bounded by
+   * a small per-account concurrent-browser limit. This is the cross-isolate
+   * half of that coalescing.
+   *
+   * Taking the lease is the commitment, not succeeding: a caller that takes it
+   * and then fails to log in still blocks the next caller for the full window.
+   * That is deliberate — a failing login (bad credentials, captcha) is exactly
+   * the case where retrying from every isolate does the most damage.
+   *
+   * `force` is for POST /admin/refresh, where an operator has asked for a
+   * refresh explicitly. It still writes the lease, so everyone else backs off
+   * behind the operator's own attempt.
+   */
+  tryRefreshLease(nowMs: number, leaseMs: number, force = false): RefreshLeaseVerdict {
+    const rows = [
+      ...this.ctx.storage.sql.exec("SELECT until FROM lease WHERE name = ?", REFRESH_LEASE),
+    ];
+    const heldUntil = rows.length > 0 ? Number(rows[0].until) : 0;
+
+    if (!force && Number.isFinite(heldUntil) && nowMs < heldUntil) {
+      return { acquired: false, retry_after_ms: heldUntil - nowMs };
+    }
+
+    this.ctx.storage.sql.exec(
+      `INSERT INTO lease (name, until) VALUES (?, ?)
+       ON CONFLICT (name) DO UPDATE SET until = excluded.until`,
+      REFRESH_LEASE,
+      nowMs + leaseMs,
+    );
+    return { acquired: true, retry_after_ms: 0 };
   }
 
   private readSpendRow(month: string): number {
