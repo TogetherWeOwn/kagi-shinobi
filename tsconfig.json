@@ -22,6 +22,11 @@
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "worker-configuration.d.ts"],
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "playwright.config.ts",
+    "worker-configuration.d.ts"
+  ],
   "exclude": ["node_modules"]
 }

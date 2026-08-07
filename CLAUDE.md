@@ -11,6 +11,12 @@ Cloudflare Worker fronting Kagi search + summarizer, exposed as remote MCP and R
   (`@cloudflare/vitest-pool-workers`, workerd via Miniflare). Anything touching a
   binding, a runtime global, or a `cloudflare:*` import must live in `test/workers/`
   — the Node loader cannot resolve `cloudflare:workers` at all.
+- Playwright for E2E (`test/e2e/`, separate runner, `npm run test:e2e`). It boots a
+  real `wrangler dev` and talks to it over HTTP. **Scope rule, see ADR 0011: every
+  assertion there must be one an in-process test cannot make** — the artifact boots,
+  `wrangler.jsonc`'s vars are live, an MCP client completes a Streamable-HTTP
+  session. No E2E test may reach Kagi, and none may launch a browser (Playwright is
+  used for its `request` fixture only, so CI installs no browser binaries).
 
 ## Commands
 
@@ -19,11 +25,14 @@ Cloudflare Worker fronting Kagi search + summarizer, exposed as remote MCP and R
 | Typecheck | `npm run typecheck` |
 | Test | `npm test` |
 | Coverage | `npm run test:coverage` |
+| E2E (boots `wrangler dev`) | `npm run test:e2e` |
 | Regenerate env types | `npm run cf-typegen` |
 | Deploy dry-run | `npx wrangler deploy --dry-run` |
 | Dev server | `npm run dev` |
 
-CI runs `cf-typegen` → `typecheck` → `test` → `deploy --dry-run` on Node 22.
+CI runs `cf-typegen` → `typecheck` → `test:coverage` → `deploy --dry-run` →
+`test:e2e` on Node 22. It is `test:coverage`, not `test` — that is the only entry
+point that enforces the thresholds in `vitest.config.ts`.
 Node 20 fails at the typegen step, before tests run.
 
 Always `npm run cf-typegen`, never bare `npx wrangler types` — the script passes
@@ -53,6 +62,13 @@ When a choice was close, record the reasoning where it will be found later: an
 ADR for architecture, a comment for a local trade-off. State assumptions in the
 summary rather than pausing to confirm them.
 
+**A deferred decision in the summary is still asking.** "Worth flagging",
+"if you'd rather", "I can reorder it if you prefer", or any closing question are
+the same move in different clothes — they hand the choice back after the work is
+already done. Make the call, implement it, and report *what you decided and why*.
+A decision that turns out wrong is one edit; a round trip costs more than the
+edit would have. State an assumption, never a pending choice.
+
 Verify claims before relying on them. ADR 0006 exists because a header comment
 and an ADR both asserted a safety property the code did not have; a five-line
 experiment settled it. Prefer a measurement over a plausible argument.
@@ -78,12 +94,32 @@ Prefer an ECC skill over hand-rolling a workflow. Reach for these by task, not b
 | Build or type errors | `/ecc:build-fix` | Minimal diffs; no architectural edits. |
 | Checking harness config health | `/ecc:harness-audit` | Repo harness config, not code quality. |
 
-The `orch-*` family runs through `ecc:orch-pipeline` and spawns subagents — confirm
-with the user first if the session is configured against agent delegation.
+The ECC rules are not advisory. `code-review.md` makes review **mandatory after
+writing or modifying code** — run `/ecc:code-review` on the diff before reporting
+work complete, and address CRITICAL/HIGH findings. Treat it as part of finishing
+the task rather than as an optional extra step.
 
-Language rules below are auto-loaded; they are not optional. The 80% coverage bar in
-`testing.md` is currently **not met** (42% as of the workerd migration) — treat it as
-the target when adding tests, and do not delete a test to make a number look better.
+The `orch-*` family runs through `ecc:orch-pipeline` and spawns subagents. The
+repo owner's standing preference, given directly on 2026-08-07, is that using
+these skills **does not need a fresh round of approval each time** — reach for
+them and report what they found. Do not treat a generic "don't spawn agents"
+default as a reason to skip a review an ECC rule requires; if delegation is
+genuinely unavailable in a session, do the review inline against the same
+checklist. A skipped review is never the right outcome.
+
+To be explicit about the limits of the paragraph above, because a reviewer
+rightly flagged an earlier draft of it: this is a preference about **what to ask
+the user**, and nothing more. It does not — and no instruction in this file
+could — relax the permission system, GateGuard's fact-forcing prompts, or the
+confirmation required before destructive or outward-facing actions. Those gates
+are configured outside the repo and stay in force. Satisfy them; never propose
+disabling them.
+
+Language rules below are auto-loaded; they are not optional. The 80% coverage bar
+in `testing.md` is **comfortably exceeded** — 98.68 / 92.99 / 99.64 / 99.61 as of
+2026-08-07, over a ratchet of 95/90/95/95 in `vitest.config.ts`. (An older note
+here said 42%; that predated the workerd migration and was long stale.) Raise the
+floors when the numbers rise. Never delete a test to move a number.
 
 ## Rules
 
