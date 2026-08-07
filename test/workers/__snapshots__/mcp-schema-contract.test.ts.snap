@@ -1,0 +1,852 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`advertised prompt arguments > match the recorded wire contract 1`] = `
+[
+  {
+    "arguments": [
+      {
+        "description": "The claim to verify.",
+        "name": "claim",
+        "required": true,
+      },
+    ],
+    "name": "cite_this_claim",
+  },
+  {
+    "arguments": [
+      {
+        "description": undefined,
+        "name": "query",
+        "required": true,
+      },
+    ],
+    "name": "compare_default_vs_personalized",
+  },
+  {
+    "arguments": [
+      {
+        "description": undefined,
+        "name": "question",
+        "required": true,
+      },
+      {
+        "description": "Optional cap for the paid-API steps. String because MCP prompt args are strings.",
+        "name": "budget_cents",
+        "required": true,
+      },
+    ],
+    "name": "deep_research_plan",
+  },
+  {
+    "arguments": [
+      {
+        "description": undefined,
+        "name": "query",
+        "required": true,
+      },
+      {
+        "description": "How many top URLs to extract (1-10).",
+        "name": "top_n",
+        "required": true,
+      },
+    ],
+    "name": "search_and_extract",
+  },
+  {
+    "arguments": [
+      {
+        "description": undefined,
+        "name": "url",
+        "required": true,
+      },
+    ],
+    "name": "verify_url",
+  },
+]
+`;
+
+exports[`advertised tool schemas > match the recorded wire contract in api mode 1`] = `
+[
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "q": {
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "q",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_enrich_news",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "q": {
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "q",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_enrich_web",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "enum": [
+            "markdown",
+            "text",
+          ],
+          "type": "string",
+        },
+        "timeout_ms": {
+          "maximum": 120000,
+          "minimum": 1000,
+          "type": "integer",
+        },
+        "urls": {
+          "description": "1 to 10 URLs to extract.",
+          "items": {
+            "format": "uri",
+            "type": "string",
+          },
+          "maxItems": 10,
+          "minItems": 1,
+          "type": "array",
+        },
+      },
+      "required": [
+        "urls",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_extract",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "cache": {
+          "description": "Allow a cached answer (default: true; cached responses are free). API-only.",
+          "type": "boolean",
+        },
+        "impl": {
+          "description": "Override which implementation handles this call. Hybrid default is scrape (free).",
+          "enum": [
+            "scrape",
+            "api",
+          ],
+          "type": "string",
+        },
+        "query": {
+          "description": "The question to answer.",
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "query",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_fastgpt",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "impl": {
+          "enum": [
+            "scrape",
+            "api",
+          ],
+          "type": "string",
+        },
+        "q": {
+          "description": "Query context. Required for impl=api.",
+          "type": "string",
+        },
+        "rules": {
+          "description": "Personalization rules. api-mode only; ignored in scrape mode.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "pin",
+                  "raise",
+                  "lower",
+                  "block",
+                ],
+                "type": "string",
+              },
+              "domain": {
+                "type": "string",
+              },
+              "regex": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "action",
+            ],
+            "type": "object",
+          },
+          "type": "array",
+        },
+        "urls": {
+          "items": {
+            "format": "uri",
+            "type": "string",
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "type": "array",
+        },
+      },
+      "required": [
+        "urls",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_personalized_rank",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "run_id",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_research_cancel_run",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "allow_api": {
+          "type": "boolean",
+        },
+        "budget_cents": {
+          "description": "Max API cents this run may spend. Default 0 (scrape-only).",
+          "minimum": 0,
+          "type": "number",
+        },
+        "depth": {
+          "maximum": 3,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "question": {
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "question",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_research_create_run",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "run_id",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_research_get_output",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "minLength": 1,
+          "type": "string",
+        },
+        "timeout_seconds": {
+          "default": 30,
+          "maximum": 300,
+          "minimum": 1,
+          "type": "integer",
+        },
+      },
+      "required": [
+        "run_id",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_research_wait_for_run",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "impl": {
+          "description": "Override which implementation handles this call. Ignored in single-impl modes.",
+          "enum": [
+            "scrape",
+            "api",
+          ],
+          "type": "string",
+        },
+        "limit": {
+          "description": "Maximum number of search results per query (default: 10, max: 50)",
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "queries": {
+          "description": "One or more concise, keyword-focused search queries (max 20 per call). Include essential context within each query for standalone use.",
+          "items": {
+            "minLength": 1,
+            "type": "string",
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "type": "array",
+        },
+      },
+      "required": [
+        "queries",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_search_fetch",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "impl": {
+          "enum": [
+            "scrape",
+            "api",
+          ],
+          "type": "string",
+        },
+        "limit": {
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "q": {
+          "description": "Search query. Omit to browse recent Small Web posts via RSS (free).",
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "kagi_small_web",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "cache": {
+          "type": "boolean",
+        },
+        "confirm_muriel": {
+          "type": "boolean",
+        },
+        "engine": {
+          "enum": [
+            "cecil",
+            "agnes",
+            "daphne",
+            "muriel",
+          ],
+          "type": "string",
+        },
+        "summary_type": {
+          "default": "summary",
+          "enum": [
+            "summary",
+            "takeaway",
+          ],
+          "type": "string",
+        },
+        "target_language": {
+          "type": "string",
+        },
+        "text": {
+          "description": "Raw text to summarize (max 1MB).",
+          "maxLength": 1000000,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "text",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_summarize_text",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "cache": {
+          "type": "boolean",
+        },
+        "confirm_muriel": {
+          "description": "Required when engine=muriel unless SUMMARIZER_MURIEL_REQUIRES_CONFIRM=false.",
+          "type": "boolean",
+        },
+        "engine": {
+          "enum": [
+            "cecil",
+            "agnes",
+            "daphne",
+            "muriel",
+          ],
+          "type": "string",
+        },
+        "impl": {
+          "enum": [
+            "scrape",
+            "api",
+          ],
+          "type": "string",
+        },
+        "summary_type": {
+          "default": "summary",
+          "enum": [
+            "summary",
+            "takeaway",
+          ],
+          "type": "string",
+        },
+        "target_language": {
+          "type": "string",
+        },
+        "url": {
+          "format": "uri",
+          "type": "string",
+        },
+      },
+      "required": [
+        "url",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_summarize_url",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "impl": {
+          "description": "Override which implementation handles this call. Ignored in single-impl modes.",
+          "enum": [
+            "scrape",
+            "api",
+          ],
+          "type": "string",
+        },
+        "summary_type": {
+          "default": "summary",
+          "description": "Type of summary to produce. 'summary' for prose, 'takeaway' for bulleted key points.",
+          "enum": [
+            "summary",
+            "takeaway",
+          ],
+          "type": "string",
+        },
+        "target_language": {
+          "description": "Desired output language. Two-letter code (e.g. 'EN'). Defaults to the document's original language.",
+          "type": "string",
+        },
+        "url": {
+          "description": "A URL to a document to summarize.",
+          "format": "uri",
+          "type": "string",
+        },
+      },
+      "required": [
+        "url",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_summarizer",
+  },
+]
+`;
+
+exports[`advertised tool schemas > match the recorded wire contract in scrape mode 1`] = `
+[
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "cache": {
+          "description": "Allow a cached answer (default: true; cached responses are free). API-only.",
+          "type": "boolean",
+        },
+        "impl": {
+          "description": "Override which implementation handles this call. Hybrid default is scrape (free).",
+          "enum": [
+            "scrape",
+            "api",
+          ],
+          "type": "string",
+        },
+        "query": {
+          "description": "The question to answer.",
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "query",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_fastgpt",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "impl": {
+          "enum": [
+            "scrape",
+            "api",
+          ],
+          "type": "string",
+        },
+        "q": {
+          "description": "Query context. Required for impl=api.",
+          "type": "string",
+        },
+        "rules": {
+          "description": "Personalization rules. api-mode only; ignored in scrape mode.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "pin",
+                  "raise",
+                  "lower",
+                  "block",
+                ],
+                "type": "string",
+              },
+              "domain": {
+                "type": "string",
+              },
+              "regex": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "action",
+            ],
+            "type": "object",
+          },
+          "type": "array",
+        },
+        "urls": {
+          "items": {
+            "format": "uri",
+            "type": "string",
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "type": "array",
+        },
+      },
+      "required": [
+        "urls",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_personalized_rank",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "run_id",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_research_cancel_run",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "allow_api": {
+          "type": "boolean",
+        },
+        "budget_cents": {
+          "description": "Max API cents this run may spend. Default 0 (scrape-only).",
+          "minimum": 0,
+          "type": "number",
+        },
+        "depth": {
+          "maximum": 3,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "question": {
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "question",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_research_create_run",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "run_id",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_research_get_output",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "minLength": 1,
+          "type": "string",
+        },
+        "timeout_seconds": {
+          "default": 30,
+          "maximum": 300,
+          "minimum": 1,
+          "type": "integer",
+        },
+      },
+      "required": [
+        "run_id",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_research_wait_for_run",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "impl": {
+          "description": "Override which implementation handles this call. Ignored in single-impl modes.",
+          "enum": [
+            "scrape",
+            "api",
+          ],
+          "type": "string",
+        },
+        "limit": {
+          "description": "Maximum number of search results per query (default: 10, max: 50)",
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "queries": {
+          "description": "One or more concise, keyword-focused search queries (max 20 per call). Include essential context within each query for standalone use.",
+          "items": {
+            "minLength": 1,
+            "type": "string",
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "type": "array",
+        },
+      },
+      "required": [
+        "queries",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_search_fetch",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "impl": {
+          "enum": [
+            "scrape",
+            "api",
+          ],
+          "type": "string",
+        },
+        "limit": {
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "q": {
+          "description": "Search query. Omit to browse recent Small Web posts via RSS (free).",
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "kagi_small_web",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "cache": {
+          "type": "boolean",
+        },
+        "confirm_muriel": {
+          "description": "Required when engine=muriel unless SUMMARIZER_MURIEL_REQUIRES_CONFIRM=false.",
+          "type": "boolean",
+        },
+        "engine": {
+          "enum": [
+            "cecil",
+            "agnes",
+            "daphne",
+            "muriel",
+          ],
+          "type": "string",
+        },
+        "impl": {
+          "enum": [
+            "scrape",
+            "api",
+          ],
+          "type": "string",
+        },
+        "summary_type": {
+          "default": "summary",
+          "enum": [
+            "summary",
+            "takeaway",
+          ],
+          "type": "string",
+        },
+        "target_language": {
+          "type": "string",
+        },
+        "url": {
+          "format": "uri",
+          "type": "string",
+        },
+      },
+      "required": [
+        "url",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_summarize_url",
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "impl": {
+          "description": "Override which implementation handles this call. Ignored in single-impl modes.",
+          "enum": [
+            "scrape",
+            "api",
+          ],
+          "type": "string",
+        },
+        "summary_type": {
+          "default": "summary",
+          "description": "Type of summary to produce. 'summary' for prose, 'takeaway' for bulleted key points.",
+          "enum": [
+            "summary",
+            "takeaway",
+          ],
+          "type": "string",
+        },
+        "target_language": {
+          "description": "Desired output language. Two-letter code (e.g. 'EN'). Defaults to the document's original language.",
+          "type": "string",
+        },
+        "url": {
+          "description": "A URL to a document to summarize.",
+          "format": "uri",
+          "type": "string",
+        },
+      },
+      "required": [
+        "url",
+      ],
+      "type": "object",
+    },
+    "name": "kagi_summarizer",
+  },
+]
+`;
