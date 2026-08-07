@@ -47,6 +47,13 @@ design position — nobody would choose it.
 Every MCP tool returns failures through `mcpError()`. `kagi_summarizer`'s
 `invalid_language` branch is changed to match; no other call site moves.
 
+The rule is then enforced structurally rather than by convention: `mcpResult()`
+loses its optional `isError` input, so it can no longer produce an error result
+at all. That flag was the escape hatch this whole ADR exists because of — after
+the change no production caller passed it, and leaving it in place would leave
+the next tool free to invent a fourth shape. `mcpError()` is now the only door.
+The `McpResult.isError` output field naturally stays; `mcpError()` sets it.
+
 Consequences for the wire:
 
 - `structuredContent.message` now present where it was missing.
