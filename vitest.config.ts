@@ -33,10 +33,15 @@ export default defineConfig({
         plugins: [
           cloudflareTest({
             wrangler: { configPath: "./wrangler.jsonc" },
-            // Undoes KV writes between tests. Note it does NOT roll back a
-            // Durable Object's SQL storage, so DO-backed suites still have to
-            // reset their own state — see the beforeEach in
-            // test/workers/cost.test.ts.
+            // Isolates storage per test — but do not treat it as a general
+            // reset. It does NOT roll back a Durable Object's SQL storage, a
+            // KV write made by loadToken() when it seeds from
+            // KAGI_SESSION_TOKEN has been observed surviving into the next
+            // test, and module globals (store.ts's memoryCache) are outside
+            // its reach entirely. Suites that need a clean slate reset it
+            // themselves — see the beforeEach in test/workers/cost.test.ts,
+            // test/workers/resources.test.ts, and
+            // test/token/refresh-browser.test.ts.
             isolatedStorage: true,
           }),
         ],
@@ -56,6 +61,19 @@ export default defineConfig({
       exclude: ["src/**/*.d.ts"],
       reporter: ["text", "json-summary", "html"],
       reportsDirectory: "coverage",
+      // Ratchet, not an aspiration. The floors sit a few points under the
+      // measured numbers (98.7 / 92.9 / 99.6 / 99.6) so ordinary churn does
+      // not fail CI, while a real regression does. The house rule is 80%;
+      // these are deliberately well above it, because the suite is already
+      // there and letting it slide back is the failure mode worth catching.
+      // Raise them when the numbers rise. Do not lower them to make a change
+      // pass — add the test instead.
+      thresholds: {
+        statements: 95,
+        branches: 90,
+        functions: 95,
+        lines: 95,
+      },
     },
   },
 });

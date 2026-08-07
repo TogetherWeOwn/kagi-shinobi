@@ -29,6 +29,9 @@ jobs:
       # No auth needed — pure type generation.
       - run: npx wrangler types
       - run: npm run typecheck
-      - run: npm test
+      # test:coverage, not test — same suite, but it is the only entry point
+      # that enforces the thresholds in vitest.config.ts. Under plain `npm
+      # test` the ratchet never runs and coverage can slide back unnoticed.
+      - run: npm run test:coverage
       # dry-run catches broken bindings/migrations without deploying.
       - run: npx wrangler deploy --dry-run
