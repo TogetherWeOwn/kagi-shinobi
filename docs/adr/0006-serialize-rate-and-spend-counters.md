@@ -77,3 +77,32 @@ is unreachable, billable calls must **fail closed** and refuse, never fall back
 to unmetered. `vitest-pool-workers`' `isolatedStorage` does not roll back
 Durable Object SQL storage, so DO-backed suites must reset their own state
 between tests or they become order-dependent.
+
+## Verification (added 2026-08-07)
+
+The fail-closed requirement above was asserted here and repeated in `cost.ts`'s
+header, but for four sessions nothing checked it. It is now pinned:
+
+- `test/kagi/api/billable-fail-closed.test.ts` — a table over all six billable
+  endpoints. The assertion that matters is not the rejection but that `fetch` is
+  never called: a refusal issued *after* the round-trip looks identical to the
+  caller and is exactly the bug.
+- `test/workers/cost.test.ts` → `describe("the Meter being unreachable")` —
+  the same property at the `guardBillable` seam, against the real DO, plus the
+  realistic partial failure where reserve succeeds and settle cannot get back.
+
+The property held. Confirmed by mutation, not by reading: making `reserveSpend`'s
+rejection fall through to an unmetered guard fails all 12 endpoint cases and 3 of
+the guard cases; reverting restores them.
+
+Two related findings came out of writing these:
+
+- **There is no local short-circuit for a 0 cap.** `readCap` is local, but the
+  cap is passed *into* `reserveSpend` and the refusal is decided inside the DO,
+  so the default deny-everything configuration still pays a round trip per
+  billable call. Left as-is — the error carries the DO's real `spent_cents`,
+  which a local refusal could not report.
+- **`apiSummarize` reserved before validating.** Its 1MB body check ran after
+  `guardBillable`, so an oversized request reserved 30¢ and threw without
+  settling — budget permanently burned on a call that never reached Kagi.
+  Validation now precedes the reservation, as it already did in `apiExtract`.
