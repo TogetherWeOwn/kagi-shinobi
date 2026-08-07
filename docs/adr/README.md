@@ -18,3 +18,4 @@ than quietly rewritten.
 | [0009](0009-zod-4-and-the-tool-schema-wire-contract.md) | Upgrade to zod 4, and treat the tool schema as a wire contract | accepted | 2026-08-06 |
 | [0010](0010-one-mcp-error-envelope.md) | One error envelope for every MCP tool | accepted | 2026-08-07 |
 | [0011](0011-an-e2e-layer-that-only-tests-what-in-process-tests-cannot.md) | An E2E layer that only tests what in-process tests cannot | accepted | 2026-08-07 |
+| [0012](0012-one-error-vocabulary-two-envelopes.md) | One error vocabulary, two envelopes | accepted | 2026-08-07 |

@@ -7,17 +7,8 @@
 import type { Env } from "./env.js";
 import { jsonError, jsonOk } from "./util/errors.js";
 import { createKagiClient, type KagiClient } from "./kagi/client.js";
-import {
-  KagiAuthError,
-  KagiBudgetExceededError,
-  KagiConfirmRequiredError,
-  KagiError,
-  KagiNotConfiguredError,
-  KagiParseError,
-  KagiRateLimitError,
-  KagiUnsupportedInModeError,
-  KagiUpstreamError,
-} from "./kagi/errors.js";
+import { KagiError, type KagiErrorDetail } from "./kagi/errors.js";
+import { KAGI_ERROR_STATUS, restErrorCode } from "./kagi/http.js";
 import { isSupportedLanguage } from "./kagi/languages.js";
 import { logWarn } from "./util/log.js";
 import type { SearchResponse } from "./kagi/types.js";
@@ -199,37 +190,39 @@ function reasonToString(reason: unknown): string {
   return String(reason);
 }
 
+// ADR 0012: status and code both come from `kind`, so the subclass a caller
+// happened to throw cannot change the answer. The chain this replaced keyed
+// status off the class and code off the kind, which is why a bare
+// `new KagiError("upstream", ...)` returned 500 `kagi-upstream` while
+// `KagiUpstreamError` returned 502 with the same code.
 export function kagiErrorResponse(err: unknown): Response {
-  if (err instanceof KagiNotConfiguredError) {
-    return jsonError(503, "kagi-not-configured", err.message);
-  }
-  if (err instanceof KagiAuthError) {
-    return jsonError(401, "kagi-auth", err.message);
-  }
-  if (err instanceof KagiConfirmRequiredError) {
-    return jsonError(400, "kagi-confirm-required", err.message);
-  }
-  if (err instanceof KagiUnsupportedInModeError) {
-    return jsonError(400, "kagi-unsupported-in-mode", err.message);
-  }
-  if (err instanceof KagiBudgetExceededError) {
-    return jsonError(402, "kagi-budget-exceeded", err.message);
-  }
-  if (err instanceof KagiRateLimitError) {
-    return jsonError(429, "kagi-rate-limit", err.message);
-  }
-  if (err instanceof KagiParseError) {
-    return jsonError(502, "kagi-parse-failed", err.message);
-  }
-  if (err instanceof KagiUpstreamError) {
-    return jsonError(502, "kagi-upstream", err.message);
-  }
   if (err instanceof KagiError) {
-    return jsonError(500, `kagi-${err.kind}`, err.message);
+    // `?? 500` is a fail-closed guard, not a fallback for ordinary use: the
+    // Record makes a missing entry a typecheck error, so this only fires for a
+    // kind that reached us past the type system — a cast, a JS caller, a value
+    // off the wire. Measured, because the failure mode is not obvious:
+    // `new Response(body, { status: undefined })` returns **200**, so without
+    // this an unmapped kind would answer an error with a success status.
+    const status = KAGI_ERROR_STATUS[err.kind] ?? 500;
+    return jsonError(status, restErrorCode(err.kind), err.message, {
+      detail: err.detail,
+      headers: retryAfterHeader(err.detail),
+    });
   }
   const msg = err instanceof Error ? err.message : String(err);
   // `error`, not `msg` — logWarn spreads fields last, so a field named `msg`
   // would overwrite the log message and leave the line without context.
   logWarn("unhandled error in REST handler", { error: msg });
   return jsonError(500, "internal", msg);
+}
+
+// Latent today: KagiRateLimitError is the only error declaring retry_after, and
+// nothing in src/ constructs one — a Kagi 429 arrives as KagiUpstreamError, so
+// as kind `upstream`. Wired anyway because a mapping keyed by kind owes every
+// kind an answer, and a 429 without Retry-After invites a client to hammer.
+// Keyed off the field rather than the class so it stays correct if another kind
+// starts carrying one. See ADR 0012.
+function retryAfterHeader(detail: KagiErrorDetail): Record<string, string> | undefined {
+  const seconds = detail.retry_after;
+  return typeof seconds === "number" ? { "Retry-After": String(seconds) } : undefined;
 }
