@@ -6,7 +6,7 @@
 // its own copy for up to 5 minutes); the last describe block pins the
 // behavior so a future change to the TTL is a deliberate, visible one.
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearMemoryCache,
   loadToken,
@@ -136,5 +136,53 @@ describe("memoryCache", () => {
     clearMemoryCache();
 
     expect((await loadToken(env))?.token).toBe("changed-elsewhere");
+  });
+});
+
+// Nothing clears this cache across isolates. An isolate that did not handle
+// the write to /admin/token keeps serving the superseded token until its own
+// entry ages out, so the TTL *is* the blast radius of a rotation.
+//
+// The bound below is deliberately hard-coded rather than imported from the
+// module: this test is the contract. Widening CACHE_TTL_MS has to fail here.
+// 60s matches Workers KV's own propagation floor — a longer window makes this
+// cache strictly worse than reading KV directly, and a shorter one buys
+// nothing, because KV's per-colo cache is 60s regardless.
+describe("memoryCache staleness is bounded by KV's own propagation window", () => {
+  const MAX_STALENESS_MS = 60_000;
+
+  async function rotateBehindTheCache() {
+    const env = makeEnv();
+    await saveToken(env, { token: "before-rotation", updatedAt: 1, source: "admin" });
+    // Simulates POST /admin/token landing on a *different* isolate.
+    await env.TOKEN_KV.put(
+      env.TOKEN_KV_KEY,
+      JSON.stringify({ token: "after-rotation", updatedAt: 2, source: "admin" }),
+    );
+    return env;
+  }
+
+  it("still serves the superseded token just inside the window", async () => {
+    vi.useFakeTimers();
+    try {
+      const env = await rotateBehindTheCache();
+      vi.advanceTimersByTime(MAX_STALENESS_MS - 1_000);
+
+      expect((await loadToken(env))?.token).toBe("before-rotation");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("picks up the rotation once the window has passed", async () => {
+    vi.useFakeTimers();
+    try {
+      const env = await rotateBehindTheCache();
+      vi.advanceTimersByTime(MAX_STALENESS_MS + 1);
+
+      expect((await loadToken(env))?.token).toBe("after-rotation");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
