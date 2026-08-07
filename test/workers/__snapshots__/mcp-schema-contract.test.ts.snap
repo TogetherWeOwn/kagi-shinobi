@@ -70,7 +70,6 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "q": {
           "minLength": 1,
@@ -87,7 +86,6 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "q": {
           "minLength": 1,
@@ -104,7 +102,6 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "format": {
           "enum": [
@@ -139,7 +136,6 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "cache": {
           "description": "Allow a cached answer (default: true; cached responses are free). API-only.",
@@ -169,7 +165,6 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "impl": {
           "enum": [
@@ -185,7 +180,6 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
         "rules": {
           "description": "Personalization rules. api-mode only; ignored in scrape mode.",
           "items": {
-            "additionalProperties": false,
             "properties": {
               "action": {
                 "enum": [
@@ -230,7 +224,6 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "run_id": {
           "minLength": 1,
@@ -247,7 +240,6 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "allow_api": {
           "type": "boolean",
@@ -277,7 +269,6 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "run_id": {
           "minLength": 1,
@@ -294,7 +285,6 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "run_id": {
           "minLength": 1,
@@ -317,7 +307,6 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "impl": {
           "description": "Override which implementation handles this call. Ignored in single-impl modes.",
@@ -354,7 +343,6 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "impl": {
           "enum": [
@@ -380,7 +368,6 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "cache": {
           "type": "boolean",
@@ -425,7 +412,6 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "cache": {
           "type": "boolean",
@@ -476,7 +462,6 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "impl": {
           "description": "Override which implementation handles this call. Ignored in single-impl modes.",
@@ -520,7 +505,6 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "cache": {
           "description": "Allow a cached answer (default: true; cached responses are free). API-only.",
@@ -550,7 +534,6 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "impl": {
           "enum": [
@@ -566,7 +549,6 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
         "rules": {
           "description": "Personalization rules. api-mode only; ignored in scrape mode.",
           "items": {
-            "additionalProperties": false,
             "properties": {
               "action": {
                 "enum": [
@@ -611,7 +593,6 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "run_id": {
           "minLength": 1,
@@ -628,7 +609,6 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "allow_api": {
           "type": "boolean",
@@ -658,7 +638,6 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "run_id": {
           "minLength": 1,
@@ -675,7 +654,6 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "run_id": {
           "minLength": 1,
@@ -698,7 +676,6 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "impl": {
           "description": "Override which implementation handles this call. Ignored in single-impl modes.",
@@ -735,7 +712,6 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "impl": {
           "enum": [
@@ -761,7 +737,6 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "cache": {
           "type": "boolean",
@@ -812,7 +787,6 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
   {
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
       "properties": {
         "impl": {
           "description": "Override which implementation handles this call. Ignored in single-impl modes.",

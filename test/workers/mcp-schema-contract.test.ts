@@ -40,8 +40,11 @@ interface ToolDescriptor {
  * Object.create skips the DO constructor (see mcp-tools.test.ts); `server` and
  * `env` are defined on the instance so they shadow the prototype's.
  */
-async function connectAgent(mode: string): Promise<Client> {
-  createKagiClient.mockReturnValue({ mode });
+async function connectAgent(
+  mode: string,
+  clientOverrides: Record<string, unknown> = {},
+): Promise<Client> {
+  createKagiClient.mockReturnValue({ mode, ...clientOverrides });
 
   const server = new McpServer({ name: "kagi-shinobi", version: "test" });
   const agent = Object.create(KagiMcpAgent.prototype) as {
@@ -162,6 +165,28 @@ describe("schema conversion preserves", () => {
     // zod v3 emits format: "uri"; zod v4 emits format: "uri" plus a pattern.
     // Either way the constraint must survive as *some* string format.
     expect(url).toMatchObject({ type: "string", format: "uri" });
+  });
+});
+
+// Whether `additionalProperties: false` belongs in the advertised schema turns
+// entirely on whether the server enforces it. zod's z.object *strips* unknown
+// keys rather than rejecting them, and server.tool() only accepts a raw shape —
+// the SDK wraps it in a plain z.object, never a strict one. So the constraint
+// was never real. This measures that rather than assuming it.
+describe("unknown arguments", () => {
+  it("are accepted and stripped, not rejected", async () => {
+    const summarize = vi.fn().mockResolvedValue({ summary: "the summary" });
+    const client = await connectAgent("api", { summarize });
+
+    const result = await client.callTool({
+      name: "kagi_summarize_url",
+      arguments: { url: "https://example.test/a", not_a_real_parameter: "ignored" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    // The handler ran, and the unknown key never reached the Kagi call.
+    expect(summarize).toHaveBeenCalledTimes(1);
+    expect(summarize.mock.calls[0][0]).not.toHaveProperty("not_a_real_parameter");
   });
 });
 
