@@ -362,8 +362,13 @@ export class KagiMcpAgent extends McpAgent<Env> {
         queries: z
           .array(z.string().min(1))
           .min(1)
+          // Bounded for the same reason as the REST path: each query becomes
+          // one concurrent upstream call, and the per-minute limit counts
+          // requests, not the calls they spawn. Matches the ceiling on
+          // kagi_personalized_rank's urls.
+          .max(20)
           .describe(
-            "One or more concise, keyword-focused search queries. Include essential context within each query for standalone use.",
+            "One or more concise, keyword-focused search queries (max 20 per call). Include essential context within each query for standalone use.",
           ),
         limit: z
           .number()
