@@ -19,7 +19,9 @@ import type { Env } from "../../../src/env";
 import { apiEnrichNews, apiEnrichWeb } from "../../../src/kagi/api/enrich";
 import { apiExtract } from "../../../src/kagi/api/extract";
 import { apiFastGPT } from "../../../src/kagi/api/fastgpt";
+import { apiRank } from "../../../src/kagi/api/rank";
 import { apiSearch } from "../../../src/kagi/api/search";
+import { apiSmallWeb } from "../../../src/kagi/api/smallweb";
 import { apiSummarize } from "../../../src/kagi/api/summarize";
 import { KagiBudgetExceededError } from "../../../src/kagi/errors";
 import { makeEnv, restoreFetch, stubFetch } from "../../_helpers";
@@ -63,7 +65,14 @@ interface BillableCall {
   readonly call: (env: Env) => Promise<unknown>;
 }
 
-/** Every endpoint that spends money. Adding one here is the point of the table. */
+/**
+ * Every entry point that spends money. apiSmallWeb and apiRank do not call the
+ * network themselves — both delegate to apiSearch and inherit its guard, each
+ * billing a full ~1.2¢ v1 search — but they are listed anyway. If either ever
+ * grows its own `client.request`, that is precisely the drift that would
+ * reintroduce an unmetered billable path, and this table is where it should
+ * fail. Adding a new billable endpoint here is the point.
+ */
 const BILLABLE: readonly BillableCall[] = [
   { name: "apiSearch", call: (env) => apiSearch(env, { query: "q" }) },
   { name: "apiFastGPT", call: (env) => apiFastGPT(env, { query: "q" }) },
@@ -83,6 +92,8 @@ const BILLABLE: readonly BillableCall[] = [
   },
   { name: "apiEnrichWeb", call: (env) => apiEnrichWeb(env, { q: "q" }) },
   { name: "apiEnrichNews", call: (env) => apiEnrichNews(env, { q: "q" }) },
+  { name: "apiSmallWeb", call: (env) => apiSmallWeb(env, { q: "q" }) },
+  { name: "apiRank", call: (env) => apiRank(env, { urls: ["https://example.test/a"], q: "q" }) },
 ];
 
 describe("billable endpoints fail closed when the Meter is unreachable", () => {
@@ -101,7 +112,12 @@ describe("billable endpoints fail closed when the Meter is unreachable", () => {
     // operator to raise a cap that was never the problem.
     stubFetch(vi.fn(async () => new Response("{}")));
 
-    await expect(call(meterlessEnv())).rejects.toThrow(UNREACHABLE);
-    await expect(call(meterlessEnv())).rejects.not.toBeInstanceOf(KagiBudgetExceededError);
+    const err: unknown = await call(meterlessEnv()).then(
+      () => new Error("expected a refusal, got a result"),
+      (reason: unknown) => reason,
+    );
+
+    expect(err).not.toBeInstanceOf(KagiBudgetExceededError);
+    expect((err as Error).message).toBe(UNREACHABLE);
   });
 });
