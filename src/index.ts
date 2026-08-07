@@ -10,8 +10,9 @@ import { KagiMcpAgent } from "./mcp.js";
 import { landingResponse } from "./landing.js";
 import { checkAndIncrement } from "./util/ratelimit.js";
 import { ResearchRun } from "./research/run.js";
+import { Meter } from "./meter/meter.js";
 
-export { KagiMcpAgent, ResearchRun };
+export { KagiMcpAgent, ResearchRun, Meter };
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {

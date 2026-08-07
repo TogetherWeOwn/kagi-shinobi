@@ -36,6 +36,21 @@ Node 20 fails at the `wrangler types` step, before tests run.
 - Architecture decisions live in `docs/adr/`. Add an ADR before changing tri-mode dispatch,
   response shapes, or the async research trio.
 
+## Working style
+
+**Decide, don't ask.** Research the options, weigh them, pick the best one, and
+proceed. Interrupt only when genuinely blocked — when proceeding under any
+assumption would be unsafe or would waste the work if wrong. A decision you can
+resolve by reading the code, checking vendor docs, or measuring is not a blocker.
+
+When a choice was close, record the reasoning where it will be found later: an
+ADR for architecture, a comment for a local trade-off. State assumptions in the
+summary rather than pausing to confirm them.
+
+Verify claims before relying on them. ADR 0006 exists because a header comment
+and an ADR both asserted a safety property the code did not have; a five-line
+experiment settled it. Prefer a measurement over a plausible argument.
+
 ## ECC surfaces — what to reach for, and when
 
 Prefer an ECC skill over hand-rolling a workflow. Reach for these by task, not by habit:

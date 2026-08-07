@@ -30,7 +30,16 @@ export default defineConfig({
         },
       },
       {
-        plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.jsonc" } })],
+        plugins: [
+          cloudflareTest({
+            wrangler: { configPath: "./wrangler.jsonc" },
+            // Undoes KV writes between tests. Note it does NOT roll back a
+            // Durable Object's SQL storage, so DO-backed suites still have to
+            // reset their own state — see the beforeEach in
+            // test/workers/cost.test.ts.
+            isolatedStorage: true,
+          }),
+        ],
         test: {
           name: "workers",
           include: ["test/workers/**/*.test.ts"],

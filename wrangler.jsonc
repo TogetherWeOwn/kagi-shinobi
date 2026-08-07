@@ -12,13 +12,17 @@
   "durable_objects": {
     "bindings": [
       { "name": "MCP_OBJECT", "class_name": "KagiMcpAgent" },
-      { "name": "RESEARCH_RUN", "class_name": "ResearchRun" }
+      { "name": "RESEARCH_RUN", "class_name": "ResearchRun" },
+      // Serializes the per-bearer rate counter and the monthly spend counter.
+      // See docs/adr/0006-serialize-rate-and-spend-counters.md.
+      { "name": "METER", "class_name": "Meter" }
     ]
   },
 
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["KagiMcpAgent"] },
-    { "tag": "v2", "new_sqlite_classes": ["ResearchRun"] }
+    { "tag": "v2", "new_sqlite_classes": ["ResearchRun"] },
+    { "tag": "v3", "new_sqlite_classes": ["Meter"] }
   ],
 
   "kv_namespaces": [

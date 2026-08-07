@@ -1,6 +1,13 @@
 # ADR 0005 — Per-bearer rate limiting
 
-**Status:** Accepted — 2026-07-11
+**Status:** Superseded by [ADR 0006](0006-serialize-rate-and-spend-counters.md) — 2026-08-06
+(originally Accepted — 2026-07-11)
+
+> **Correction.** Two statements below are wrong and were corrected in ADR 0006.
+> The Decision says "increment-then-check"; the code did check-then-increment.
+> The Consequences say KV eventual consistency makes the worker *over*-count
+> ("over-throttle, not under-throttle") — the read-then-write actually
+> **under**-counted, admitting 20 of 20 concurrent requests against a limit of 5.
 
 ## Context
 
