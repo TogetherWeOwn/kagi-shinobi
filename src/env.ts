@@ -12,9 +12,22 @@ declare global {
   namespace Cloudflare {
     interface Env {
       ADMIN_TOKEN: string;
+      // Scrape mode
       KAGI_SESSION_TOKEN?: string;
       KAGI_EMAIL?: string;
       KAGI_PASSWORD?: string;
+      // Official API mode (S3+). When absent, api-mode calls throw
+      // KagiNotConfiguredError before hitting the network.
+      KAGI_API_KEY?: string;
+      // Tri-mode dispatcher config (populated from wrangler.jsonc `vars`).
+      KAGI_MODE?: string; // "scrape" | "api" | "hybrid" | "auto"
+      // Monthly hard cap on API cost, in cents. Default 0 → all billable
+      // API calls refuse until the operator raises this.
+      MAX_API_CENTS_PER_MONTH?: string;
+      // Ops hardening (S7).
+      PER_BEARER_RPM?: string;
+      SUMMARIZER_MURIEL_REQUIRES_CONFIRM?: string;
+      CAPTCHA_WEBHOOK_URL?: string;
     }
   }
 }

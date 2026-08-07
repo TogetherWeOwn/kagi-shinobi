@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "v1-**"]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # wrangler requires >= 22; the `wrangler types` step below fails
+          # outright on 20, before typecheck or tests ever run.
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci
+      # Regenerate the ambient Cloudflare.Env types from wrangler.jsonc.
+      # No auth needed — pure type generation.
+      - run: npx wrangler types
+      - run: npm run typecheck
+      - run: npm test
+      # dry-run catches broken bindings/migrations without deploying.
+      - run: npx wrangler deploy --dry-run

@@ -11,18 +11,14 @@
 
   "durable_objects": {
     "bindings": [
-      {
-        "name": "MCP_OBJECT",
-        "class_name": "KagiMcpAgent"
-      }
+      { "name": "MCP_OBJECT", "class_name": "KagiMcpAgent" },
+      { "name": "RESEARCH_RUN", "class_name": "ResearchRun" }
     ]
   },
 
   "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["KagiMcpAgent"]
-    }
+    { "tag": "v1", "new_sqlite_classes": ["KagiMcpAgent"] },
+    { "tag": "v2", "new_sqlite_classes": ["ResearchRun"] }
   ],
 
   "kv_namespaces": [
@@ -40,9 +36,23 @@
   },
 
   // Non-secret runtime config. Secrets (ADMIN_TOKEN, KAGI_SESSION_TOKEN,
-  // KAGI_EMAIL, KAGI_PASSWORD) go via `wrangler secret put`.
+  // KAGI_EMAIL, KAGI_PASSWORD, KAGI_API_KEY, CAPTCHA_WEBHOOK_URL) go via
+  // `wrangler secret put`.
   "vars": {
     "AUTO_REFRESH_ENABLED": "true",
-    "TOKEN_KV_KEY": "session_token"
+    "TOKEN_KV_KEY": "session_token",
+    // Tri-mode dispatcher: scrape | api | hybrid | auto (default). "auto"
+    // picks scrape / api / hybrid from which secrets are set. See
+    // docs/adr/0001-tri-mode-architecture.md.
+    "KAGI_MODE": "scrape",
+    // Hard cap on total API cost this month, in whole cents. Default 0 —
+    // every billable API call refuses until you raise it. Applied via a
+    // KV-backed counter reset at the start of each UTC month.
+    "MAX_API_CENTS_PER_MONTH": "0",
+    // Per-bearer rate limit (requests per minute). 0 disables.
+    "PER_BEARER_RPM": "60",
+    // Muriel is $1 per summary — require an explicit confirm flag on the
+    // tool call unless this is set to "false".
+    "SUMMARIZER_MURIEL_REQUIRES_CONFIRM": "true"
   }
 }

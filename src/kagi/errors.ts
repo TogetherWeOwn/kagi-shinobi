@@ -1,23 +1,112 @@
 // Errors thrown by the Kagi client. Distinguished so the token manager can
-// decide whether to trigger a refresh.
+// decide whether to trigger a refresh, and so MCP tools can map them onto a
+// stable `error_kind` field for callers.
 
-export class KagiAuthError extends Error {
-  constructor(msg = "Invalid or expired session token") {
+export type KagiErrorKind =
+  | "auth"
+  | "captcha"
+  | "parse"
+  | "upstream"
+  | "rate_limit"
+  | "budget_exceeded"
+  | "unsupported_in_mode"
+  | "confirm_required"
+  | "not_configured"
+  | "timeout";
+
+export interface KagiErrorDetail {
+  status?: number;
+  status_text?: string;
+  retry_after?: number;   // seconds
+  [key: string]: unknown;
+}
+
+/** Base class every Kagi-side error inherits from. */
+export class KagiError extends Error {
+  constructor(
+    public kind: KagiErrorKind,
+    msg: string,
+    public detail: KagiErrorDetail = {},
+  ) {
     super(msg);
+    this.name = "KagiError";
+  }
+}
+
+export class KagiAuthError extends KagiError {
+  constructor(msg = "Invalid or expired session token") {
+    super("auth", msg);
     this.name = "KagiAuthError";
   }
 }
 
-export class KagiUpstreamError extends Error {
+export class KagiCaptchaError extends KagiError {
+  constructor(msg = "Kagi login blocked by a challenge") {
+    super("captcha", msg);
+    this.name = "KagiCaptchaError";
+  }
+}
+
+export class KagiUpstreamError extends KagiError {
   constructor(public status: number, public statusText: string) {
-    super(`HTTP ${status}: ${statusText}`);
+    super("upstream", `HTTP ${status}: ${statusText}`, { status, status_text: statusText });
     this.name = "KagiUpstreamError";
   }
 }
 
-export class KagiParseError extends Error {
+export class KagiParseError extends KagiError {
   constructor(msg: string) {
-    super(msg);
+    super("parse", msg);
     this.name = "KagiParseError";
+  }
+}
+
+export class KagiRateLimitError extends KagiError {
+  constructor(retryAfter: number, msg = "Rate limit exceeded") {
+    super("rate_limit", msg, { retry_after: retryAfter });
+    this.name = "KagiRateLimitError";
+  }
+}
+
+export class KagiBudgetExceededError extends KagiError {
+  constructor(spent_cents: number, cap_cents: number) {
+    super(
+      "budget_exceeded",
+      `API cost cap reached (${spent_cents}¢ of ${cap_cents}¢ this month)`,
+      { spent_cents, cap_cents },
+    );
+    this.name = "KagiBudgetExceededError";
+  }
+}
+
+export class KagiUnsupportedInModeError extends KagiError {
+  constructor(tool: string, mode: string) {
+    super(
+      "unsupported_in_mode",
+      `Tool '${tool}' is not available in mode='${mode}'`,
+      { tool, mode },
+    );
+    this.name = "KagiUnsupportedInModeError";
+  }
+}
+
+export class KagiConfirmRequiredError extends KagiError {
+  constructor(msg: string, detail: KagiErrorDetail = {}) {
+    super("confirm_required", msg, detail);
+    this.name = "KagiConfirmRequiredError";
+  }
+}
+
+export class KagiNotConfiguredError extends KagiError {
+  constructor(msg: string) {
+    super("not_configured", msg);
+    this.name = "KagiNotConfiguredError";
+  }
+}
+
+export class KagiTimeoutError extends KagiError {
+  constructor(ms: number) {
+    super("timeout", `Timeout after ${ms}ms`, { ms });
+    this.name = "KagiTimeoutError";
   }
 }

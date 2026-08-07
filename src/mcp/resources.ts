@@ -1,0 +1,95 @@
+// MCP resources — read-only URIs the client can browse or subscribe to.
+//
+// S9 registers the fixed URIs. Templated URIs (search://run/{id}) require
+// a resource template registration which the SDK exposes as `.resource()`
+// with a template arg — noted as a follow-up if needed.
+
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { Env } from "../env.js";
+import { budgetSnapshot } from "../kagi/api/cost.js";
+import { readLimit } from "../util/ratelimit.js";
+import { fetchSmallWebRss } from "../kagi/scrape/smallweb.js";
+import { resolveMode } from "../kagi/mode.js";
+import { loadToken } from "../token/store.js";
+
+interface ResourceContent {
+  uri: string;
+  mimeType: string;
+  text: string;
+}
+
+export function registerResources(server: McpServer, env: Env): void {
+  server.resource(
+    "kagi_budget",
+    "kagi://budget",
+    {
+      description: "Current-month API cost cap and spend.",
+      mimeType: "application/json",
+    },
+    async (uri) => ({ contents: [await readBudget(env, uri.href)] }),
+  );
+
+  server.resource(
+    "kagi_api_status",
+    "kagi://api-status",
+    {
+      description: "Mode + credential + session-token health snapshot.",
+      mimeType: "application/json",
+    },
+    async (uri) => ({ contents: [await readApiStatus(env, uri.href)] }),
+  );
+
+  server.resource(
+    "kagi_smallweb_recent",
+    "kagi://smallweb/recent",
+    {
+      description: "Recent Small Web posts via the free Kagi RSS feed.",
+      mimeType: "application/json",
+    },
+    async (uri) => ({ contents: [await readSmallWebRecent(uri.href)] }),
+  );
+}
+
+async function readBudget(env: Env, uri: string): Promise<ResourceContent> {
+  try {
+    const snap = await budgetSnapshot(env);
+    return { uri, mimeType: "application/json", text: JSON.stringify(snap, null, 2) };
+  } catch (err) {
+    return {
+      uri,
+      mimeType: "application/json",
+      text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+    };
+  }
+}
+
+async function readApiStatus(env: Env, uri: string): Promise<ResourceContent> {
+  const body: Record<string, unknown> = {};
+  try {
+    const info = resolveMode(env);
+    body.mode = info.mode;
+    body.has_session = info.has_session;
+    body.has_api_key = info.has_api_key;
+    body.per_bearer_rpm = readLimit(env);
+    const envelope = await loadToken(env);
+    body.session_token = envelope
+      ? { status: envelope.stale ? "stale" : "ok", updatedAt: envelope.updatedAt, source: envelope.source }
+      : { status: "missing" };
+  } catch (err) {
+    body.error = err instanceof Error ? err.message : String(err);
+  }
+  return { uri, mimeType: "application/json", text: JSON.stringify(body, null, 2) };
+}
+
+async function readSmallWebRecent(uri: string): Promise<ResourceContent> {
+  try {
+    const feed = await fetchSmallWebRss(15);
+    return { uri, mimeType: "application/json", text: JSON.stringify(feed, null, 2) };
+  } catch (err) {
+    return {
+      uri,
+      mimeType: "application/json",
+      text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+    };
+  }
+}
