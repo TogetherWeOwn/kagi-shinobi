@@ -45,6 +45,44 @@ describe("public routes", () => {
   });
 });
 
+// /health is reachable by anyone on the internet, so its unauthenticated body
+// must be a liveness signal and nothing more. Token presence, staleness, the
+// last-refresh timestamp, and which mechanism produced the token all describe
+// the operator's credential state and belong behind the bearer.
+describe("GET /health withholds token state from unauthenticated callers", () => {
+  const DETAIL_KEYS = ["token", "updatedAt", "source", "autoRefresh"] as const;
+
+  it("returns only a liveness flag with no bearer", async () => {
+    const res = await call("/health");
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ ok: true });
+  });
+
+  it("returns only a liveness flag when the bearer is wrong", async () => {
+    const res = await call("/health", { headers: { Authorization: "Bearer not-the-token" } });
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    for (const key of DETAIL_KEYS) {
+      expect(body).not.toHaveProperty(key);
+    }
+  });
+
+  it("returns full token status to an authenticated caller", async () => {
+    const res = await call("/health", { headers: auth });
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(true);
+    for (const key of DETAIL_KEYS) {
+      expect(body).toHaveProperty(key);
+    }
+    expect(["ok", "stale", "missing"]).toContain(body.token);
+  });
+});
+
 describe("the bearer gate is wired in front of every other route", () => {
   const gated: ReadonlyArray<[string, string]> = [
     ["POST", "/search"],

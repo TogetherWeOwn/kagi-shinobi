@@ -50,7 +50,7 @@ export const LANDING_HTML = `<!doctype html>
     <li><code>POST /mcp</code> &mdash; Streamable-HTTP MCP endpoint <span class="pill">bearer required</span></li>
     <li><code>POST /search</code> &mdash; REST search <span class="pill">bearer required</span></li>
     <li><code>POST /summarize</code> &mdash; REST summarizer <span class="pill">bearer required</span></li>
-    <li><code>GET /health</code> &mdash; token status <span class="pill">public</span></li>
+    <li><code>GET /health</code> &mdash; liveness <span class="pill">public</span>, token status <span class="pill">bearer required</span></li>
     <li><code>GET /</code> &mdash; this page <span class="pill">public</span></li>
   </ul>
 
