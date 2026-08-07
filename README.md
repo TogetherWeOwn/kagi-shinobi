@@ -15,7 +15,7 @@ from stdio to Streamable HTTP).
 | Path | Method | Auth | Purpose |
 |---|---|---|---|
 | `/mcp` | POST/GET | Bearer | MCP Streamable HTTP transport (McpAgent) |
-| `/search` | POST `{queries, limit?}` | Bearer | Direct search |
+| `/search` | POST `{queries, limit?}` | Bearer | Direct search — max 20 queries per request |
 | `/summarize` | POST `{url, summary_type?, target_language?}` | Bearer | Direct summarize |
 | `/admin/token` | POST `{token}` | Bearer | Manually rotate session token |
 | `/admin/refresh` | POST | Bearer | Force Browser Rendering refresh |
@@ -25,7 +25,7 @@ The Bearer token is the `ADMIN_TOKEN` secret. Use `Authorization: Bearer <token>
 
 ## MCP tools exposed
 
-- `kagi_search_fetch({ queries: string[], limit?: number })`
+- `kagi_search_fetch({ queries: string[], limit?: number })` — max 20 queries per call
 - `kagi_summarizer({ url: string, summary_type?: "summary"|"takeaway", target_language?: string })`
 
 Schemas match the upstream `kagi-ken-mcp` server so any client already

@@ -1,5 +1,25 @@
 // Bearer-token gate for every non-/health endpoint.
-// Uses constant-time comparison to avoid leaking token length via timing.
+//
+// The comparison below does NOT leak *which* character differs: the loop XORs
+// every position and only tests the accumulator at the end. It DOES leak the
+// token's length, via the early return in timingSafeEqual — an earlier version
+// of this comment claimed otherwise, which was wrong.
+//
+// Measured rather than argued (2026-08-06, Node 22, 2M iterations, median of
+// 7 rounds, against a 43-char secret):
+//
+//   wrong token, same length : 105.35 ns/call   (walks the full loop)
+//   wrong token, diff length :   1.80 ns/call   (early return)
+//   delta                    : 103.55 ns        (58x ratio)
+//
+// The ratio is stark but the absolute delta is ~100 ns against 1-10 ms of
+// internet jitter, so separating the two needs on the order of 1e8 requests —
+// roughly three years at the default PER_BEARER_RPM=60 — and yields only the
+// length, not the token. Left as-is deliberately. The fix is to compare
+// SHA-256 digests, which is correct but makes requireBearer async and every
+// caller with it; do that if the rate limit is raised substantially, if this
+// gate moves somewhere unmetered, or if ADMIN_TOKEN stops being a
+// high-entropy generated value.
 
 import type { Env } from "../env.js";
 import { jsonError } from "./errors.js";

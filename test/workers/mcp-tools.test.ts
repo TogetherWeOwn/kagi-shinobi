@@ -10,6 +10,7 @@
 
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ZodTypeAny } from "zod";
 import {
   KagiAuthError,
   KagiBudgetExceededError,
@@ -87,9 +88,16 @@ async function buildAgent(mode = "scrape", clientOverrides: Record<string, unkno
   createKagiClient.mockReturnValue(client);
 
   const tools = new Map<string, Handler>();
+  const schemas = new Map<string, Record<string, ZodTypeAny>>();
   const server = {
-    tool: (name: string, _desc: string, _schema: unknown, handler: Handler) => {
+    tool: (
+      name: string,
+      _desc: string,
+      schema: Record<string, ZodTypeAny>,
+      handler: Handler,
+    ) => {
       tools.set(name, handler);
+      schemas.set(name, schema);
     },
     resource: () => {},
     prompt: () => {},
@@ -103,7 +111,7 @@ async function buildAgent(mode = "scrape", clientOverrides: Record<string, unkno
   Object.defineProperty(agent, "env", { value: env, configurable: true });
   await agent.init();
 
-  return { tools, client };
+  return { tools, schemas, client };
 }
 
 /** Run one registered tool and return its result envelope. */
@@ -547,6 +555,39 @@ describe("the research trio", () => {
 
     expect(result.structuredContent?.error_kind).toBe("internal");
     expect(result.structuredContent?.message).toBe("DO unreachable");
+  });
+});
+
+// The SDK validates tool input against the registered schema before the
+// handler runs, so a fan-out ceiling declared here is the thing that actually
+// enforces it — asserting on the handler would sail straight past the bound.
+describe("fan-out ceilings are declared in the tool schemas", () => {
+  async function schemaFor(tool: string, mode = "scrape") {
+    const { schemas } = await buildAgent(mode);
+    const schema = schemas.get(tool);
+    if (!schema) throw new Error(`tool ${tool} was not registered in mode=${mode}`);
+    return schema;
+  }
+
+  it("kagi_search_fetch accepts 20 queries and refuses 21", async () => {
+    const schema = await schemaFor("kagi_search_fetch");
+
+    expect(schema.queries.safeParse(Array(20).fill("q")).success).toBe(true);
+    expect(schema.queries.safeParse(Array(21).fill("q")).success).toBe(false);
+  });
+
+  it("kagi_search_fetch still requires at least one query", async () => {
+    const schema = await schemaFor("kagi_search_fetch");
+
+    expect(schema.queries.safeParse([]).success).toBe(false);
+  });
+
+  it("kagi_personalized_rank keeps its own 20-url ceiling", async () => {
+    const schema = await schemaFor("kagi_personalized_rank");
+    const urls = (n: number) => Array.from({ length: n }, (_, i) => `https://e.test/${i}`);
+
+    expect(schema.urls.safeParse(urls(20)).success).toBe(true);
+    expect(schema.urls.safeParse(urls(21)).success).toBe(false);
   });
 });
 

@@ -22,6 +22,18 @@ import { isSupportedLanguage } from "./kagi/languages.js";
 import { logWarn } from "./util/log.js";
 import type { SearchResponse } from "./kagi/types.js";
 
+/**
+ * Ceiling on queries per request, because /search fans out to one upstream
+ * call per query.
+ *
+ * PER_BEARER_RPM limits *requests*, not the calls a request spawns, so without
+ * this a single authorized request multiplies into an unbounded concurrent
+ * burst: billable in api mode, session-ban bait in scrape mode, and over the
+ * Workers subrequest cap either way. 20 matches the ceiling
+ * kagi_personalized_rank already applies to its own fan-out.
+ */
+const MAX_QUERIES_PER_REQUEST = 20;
+
 interface SearchBody {
   queries?: unknown;
   limit?: unknown;
@@ -46,6 +58,13 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
   const { queries, limit, impl } = body;
   if (!Array.isArray(queries) || queries.length === 0) {
     return jsonError(400, "missing-queries", "Body needs { queries: string[] }");
+  }
+  if (queries.length > MAX_QUERIES_PER_REQUEST) {
+    return jsonError(
+      400,
+      "too-many-queries",
+      `At most ${MAX_QUERIES_PER_REQUEST} queries per request; split the batch`,
+    );
   }
   const normQueries: string[] = [];
   for (const q of queries) {

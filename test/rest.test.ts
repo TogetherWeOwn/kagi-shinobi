@@ -161,6 +161,50 @@ describe("handleSearch input validation", () => {
   });
 });
 
+// One request fans out to one upstream call per query. The per-minute rate
+// limit governs requests, not the calls they spawn, so without a ceiling here
+// a single authorized request can multiply into an unbounded burst against
+// kagi.com — billable in api mode, session-ban bait in scrape mode, and past
+// the Workers subrequest cap either way.
+describe("handleSearch bounds its fan-out", () => {
+  it("accepts a request at the ceiling", async () => {
+    const queries = Array.from({ length: 20 }, (_, i) => `q${i}`);
+
+    const res = await handleSearch(post({ queries }), makeEnv());
+
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects a request past the ceiling", async () => {
+    const queries = Array.from({ length: 21 }, (_, i) => `q${i}`);
+
+    const res = await handleSearch(post({ queries }), makeEnv());
+
+    expect(res.status).toBe(400);
+    expect((await json(res)).error).toMatchObject({ code: "too-many-queries" });
+  });
+
+  it("names the ceiling so the caller can split the batch", async () => {
+    const queries = Array.from({ length: 50 }, (_, i) => `q${i}`);
+
+    const res = await handleSearch(post({ queries }), makeEnv());
+
+    expect((await json(res)).error).toMatchObject({
+      message: expect.stringContaining("20"),
+    });
+  });
+
+  it("refuses before building a client or touching the network", async () => {
+    const client = fakeClient();
+    createKagiClient.mockReturnValue(client);
+    const queries = Array.from({ length: 100 }, (_, i) => `q${i}`);
+
+    await handleSearch(post({ queries }), makeEnv());
+
+    expect(client.search).not.toHaveBeenCalled();
+  });
+});
+
 describe("handleSearch dispatch", () => {
   it("maps a client construction failure onto its Kagi error response", async () => {
     createKagiClient.mockImplementation(() => {

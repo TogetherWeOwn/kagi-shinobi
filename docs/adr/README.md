@@ -14,3 +14,4 @@ than quietly rewritten.
 | [0005](0005-per-bearer-rate-limiting.md) | Per-bearer rate limiting | superseded by 0006 | 2026-07-11 |
 | [0006](0006-serialize-rate-and-spend-counters.md) | Serialize the rate-limit and spend counters in a Durable Object | accepted | 2026-08-06 |
 | [0007](0007-bound-token-cache-and-coordinate-refresh.md) | Bound the token cache to KV's propagation window, coordinate refreshes in the Meter | accepted | 2026-08-06 |
+| [0008](0008-bound-request-fan-out.md) | Bound per-request fan-out at both front doors | accepted | 2026-08-06 |
