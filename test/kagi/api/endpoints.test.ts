@@ -206,6 +206,32 @@ describe("apiSummarize", () => {
     expect(resp.engine_used).toBe("muriel");
   });
 
+  // kagi_summarize_text is api-only per capability.ts, and until now the only
+  // thing reaching its `text` branch was the 1MB rejection above, on its way to
+  // throwing. Nothing asserted that a text summary actually works.
+  it("sends text (not url) in the body for kind='text'", async () => {
+    const seen: { body?: string } = {};
+    stubFetch(async (input, init) => {
+      seen.body = typeof init?.body === "string" ? init.body : undefined;
+      return fakeFetch({ meta: {}, data: { output: "condensed", tokens: 11 } })(input, init);
+    });
+    const env = makeEnv(CAPACIOUS);
+
+    const resp = await apiSummarize(env, {
+      kind: "text",
+      ref: "a passage worth condensing",
+      language: "EN",
+      style: "summary",
+    });
+
+    const body = JSON.parse(seen.body ?? "{}");
+    expect(body.text).toBe("a passage worth condensing");
+    expect(body.url).toBeUndefined();
+    expect(resp.source).toEqual({ kind: "text", ref: "a passage worth condensing" });
+    expect(resp.summary).toBe("condensed");
+    expect(await readSpend(env)).toBeCloseTo(30);
+  });
+
   it("rejects 1MB+ text bodies before hitting the network", async () => {
     const fetchSpy = vi.fn(fakeFetch({ meta: {}, data: { output: "" } }));
     stubFetch(fetchSpy);
@@ -219,6 +245,11 @@ describe("apiSummarize", () => {
       }),
     ).rejects.toBeInstanceOf(KagiError);
     expect(fetchSpy).not.toHaveBeenCalled();
+    // ...and charges nothing for it. A request rejected on our own side never
+    // reaches Kagi, so a reservation left behind by it is budget burned on a
+    // call that cost nothing — and there is no settle on this path to give it
+    // back.
+    expect(await readSpend(env)).toBe(0);
   });
 });
 

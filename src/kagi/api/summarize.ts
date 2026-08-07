@@ -39,6 +39,13 @@ export async function apiSummarize(
   const engine = pickEngine(args.engine);
   if (engine === "muriel") requireMurielConfirm(env, args.confirm_muriel);
 
+  // Validate before reserving. A body we reject ourselves never reaches Kagi
+  // and costs nothing, but this path has no settle, so guarding first left the
+  // projected charge on the books permanently.
+  if (args.kind === "text" && args.ref.length > 1_000_000) {
+    throw new KagiError("parse", "summarize text body exceeds 1MB request cap");
+  }
+
   const cache = args.cache ?? true;
   const projected = engine === "muriel" ? MURIEL_CENTS : CECIL_AGNES_CAP_CENTS;
 
@@ -53,10 +60,6 @@ export async function apiSummarize(
   };
   if (args.kind === "url") req.url = args.ref;
   else req.text = args.ref;
-
-  if (args.kind === "text" && args.ref.length > 1_000_000) {
-    throw new KagiError("parse", "summarize text body exceeds 1MB request cap");
-  }
 
   const client = new KagiApiClient(env);
   const wire = await client.request<V0SummarizeData>({
