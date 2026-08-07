@@ -19,12 +19,18 @@ Cloudflare Worker fronting Kagi search + summarizer, exposed as remote MCP and R
 | Typecheck | `npm run typecheck` |
 | Test | `npm test` |
 | Coverage | `npm run test:coverage` |
-| Regenerate env types | `npx wrangler types` |
+| Regenerate env types | `npm run cf-typegen` |
 | Deploy dry-run | `npx wrangler deploy --dry-run` |
 | Dev server | `npm run dev` |
 
-CI runs `wrangler types` → `typecheck` → `test` → `deploy --dry-run` on Node 22.
-Node 20 fails at the `wrangler types` step, before tests run.
+CI runs `cf-typegen` → `typecheck` → `test` → `deploy --dry-run` on Node 22.
+Node 20 fails at the typegen step, before tests run.
+
+Always `npm run cf-typegen`, never bare `npx wrangler types` — the script passes
+`--strict-vars=false`. Without it wrangler types every var as the literal value
+currently in `wrangler.jsonc` (`KAGI_MODE: "scrape"`), which breaks any code or
+test using another value and fails `typecheck`. CI invokes the same script, so
+the flags live in one place; keep it that way. See the header of `src/env.ts`.
 
 ## Constraints
 

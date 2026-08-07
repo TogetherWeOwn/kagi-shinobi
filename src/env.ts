@@ -5,12 +5,25 @@
 // wrangler.jsonc (they're set at runtime via `wrangler secret put`), so we
 // augment Cloudflare.Env below so the type system knows they exist.
 //
-// If you add a new binding, edit wrangler.jsonc and re-run `wrangler types`.
-// If you add a new secret, add it to this augmentation.
+// If you add a new binding or a new var, edit wrangler.jsonc and re-run
+// `npm run cf-typegen`. If you add a new secret, add it to this augmentation.
+//
+// The typegen runs with `--strict-vars=false` on purpose. Wrangler's default
+// types each var as the literal currently sitting in wrangler.jsonc —
+// `KAGI_MODE: "scrape"`, `PER_BEARER_RPM: "60"` — which is a fact about the
+// config file, not about runtime. Vars are operator-tunable, so the literals
+// are wrong the moment anyone changes one: `mode === "api"` becomes a
+// comparison TypeScript rejects as impossible, though the tri-mode dispatcher
+// in ADR 0001 exists precisely to handle the other three values, and a test
+// setting PER_BEARER_RPM to "0" stops type-checking against a "60" literal.
+// Declaring a var here instead does NOT widen the generated member — it
+// contradicts it, which TypeScript 7 reports as TS2430 and TypeScript 5.9
+// silently accepted. Keep vars out of this augmentation.
 
 declare global {
   namespace Cloudflare {
     interface Env {
+      // Secrets only.
       ADMIN_TOKEN: string;
       // Scrape mode
       KAGI_SESSION_TOKEN?: string;
@@ -19,14 +32,6 @@ declare global {
       // Official API mode (S3+). When absent, api-mode calls throw
       // KagiNotConfiguredError before hitting the network.
       KAGI_API_KEY?: string;
-      // Tri-mode dispatcher config (populated from wrangler.jsonc `vars`).
-      KAGI_MODE?: string; // "scrape" | "api" | "hybrid" | "auto"
-      // Monthly hard cap on API cost, in cents. Default 0 → all billable
-      // API calls refuse until the operator raises this.
-      MAX_API_CENTS_PER_MONTH?: string;
-      // Ops hardening (S7).
-      PER_BEARER_RPM?: string;
-      SUMMARIZER_MURIEL_REQUIRES_CONFIRM?: string;
       CAPTCHA_WEBHOOK_URL?: string;
     }
   }
