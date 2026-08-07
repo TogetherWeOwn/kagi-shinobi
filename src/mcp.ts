@@ -452,13 +452,12 @@ export class KagiMcpAgent extends McpAgent<Env> {
         try {
           const language = target_language ?? "EN";
           if (target_language && !isSupportedLanguage(target_language)) {
-            return mcpResult({
-              text: `Error: unsupported target_language '${target_language}'. Supported: ${SUPPORTED_LANGUAGES.join(", ")}`,
-              structured: {
-                error_kind: "invalid_language",
-                supported: [...SUPPORTED_LANGUAGES],
-              },
-              isError: true,
+            // Same envelope as this tool's catch block and as the other two
+            // summarize tools — see ADR 0010.
+            return mcpError({
+              kind: "invalid_language",
+              message: `unsupported target_language '${target_language}'`,
+              detail: { supported: [...SUPPORTED_LANGUAGES] },
             });
           }
           const canonical = await client.summarize({

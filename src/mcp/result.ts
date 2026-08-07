@@ -10,10 +10,12 @@
 // them under a key (e.g. `{queries: [...]}` rather than `[...]`).
 type Structured = Record<string, unknown>;
 
+// No `isError` here on purpose. Errors go through mcpError() so every failure
+// carries the same envelope; an opt-in flag on the success builder is how
+// kagi_summarizer ended up with a shape of its own. See ADR 0010.
 export interface McpResultInit {
   text: string;
   structured?: Structured;
-  isError?: boolean;
 }
 
 // Index signature required by @modelcontextprotocol/sdk's CallToolResult:
@@ -31,7 +33,6 @@ export function mcpResult(init: McpResultInit): McpResult {
     content: [{ type: "text", text: init.text }],
   };
   if (init.structured !== undefined) result.structuredContent = init.structured;
-  if (init.isError) result.isError = true;
   return result;
 }
 

@@ -14,9 +14,12 @@ describe("mcpResult", () => {
     expect(r.structuredContent).toEqual({ foo: 1 });
   });
 
-  it("flags isError when requested", () => {
-    const r = mcpResult({ text: "bad", isError: true });
-    expect(r.isError).toBe(true);
+  // ADR 0010: mcpError is the only door to an error result. mcpResult cannot
+  // produce one even when the payload looks like a failure, so a tool cannot
+  // quietly invent a fourth shape the way kagi_summarizer did.
+  it("never flags isError, whatever it is handed", () => {
+    const r = mcpResult({ text: "Error: something went wrong", structured: { error_kind: "x" } });
+    expect(r.isError).toBeUndefined();
   });
 });
 
