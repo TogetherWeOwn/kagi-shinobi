@@ -209,6 +209,8 @@ export function kagiErrorResponse(err: unknown): Response {
     return jsonError(500, `kagi-${err.kind}`, err.message);
   }
   const msg = err instanceof Error ? err.message : String(err);
-  logWarn("unhandled error in REST handler", { msg });
+  // `error`, not `msg` — logWarn spreads fields last, so a field named `msg`
+  // would overwrite the log message and leave the line without context.
+  logWarn("unhandled error in REST handler", { error: msg });
   return jsonError(500, "internal", msg);
 }

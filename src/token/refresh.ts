@@ -118,7 +118,9 @@ async function doRefresh(env: Env): Promise<RefreshResult> {
     return { ok: true, token: session.value };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logWarn("browser-refresh: failed", { msg });
+    // `error`, not `msg` — logWarn spreads fields last, so a field named `msg`
+    // would overwrite the log message and leave the line without context.
+    logWarn("browser-refresh: failed", { error: msg });
     return { ok: false, reason: `refresh failed: ${msg}` };
   } finally {
     if (browser) await browser.close().catch(() => undefined);

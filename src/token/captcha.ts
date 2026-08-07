@@ -35,8 +35,11 @@ export async function notifyCaptcha(env: Env, payload: CaptchaAlertPayload): Pro
       body: JSON.stringify(payload),
     });
   } catch (err) {
+    // Field name is `error`, not `msg`: logWarn spreads fields last, so a
+    // field called `msg` overwrites the log message itself and the line loses
+    // all its context.
     logWarn("captcha webhook failed", {
-      msg: err instanceof Error ? err.message : String(err),
+      error: err instanceof Error ? err.message : String(err),
     });
   }
 }
