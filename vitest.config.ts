@@ -24,7 +24,12 @@ export default defineConfig({
         test: {
           name: "unit",
           include: ["test/**/*.test.ts"],
-          exclude: ["test/workers/**"],
+          // test/e2e/** belongs to Playwright (npm run test:e2e). Its specs are
+          // *.spec.ts, so the glob above already misses them; this entry is
+          // what keeps a *.test.ts written there from being run by this
+          // runner, where its Playwright imports would fail for reasons that
+          // have nothing to do with the code under test.
+          exclude: ["test/workers/**", "test/e2e/**"],
           environment: "node",
           globals: false,
         },
