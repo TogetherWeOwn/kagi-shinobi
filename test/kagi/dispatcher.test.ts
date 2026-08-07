@@ -5,7 +5,7 @@
 // We stub both impls with a mock so we can watch which one the facade
 // reaches for on each call, without needing real Kagi access.
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { KagiClient } from "../../src/kagi/client";
 import { KagiScrapeClient } from "../../src/kagi/scrape/index";
 import { KagiApiImpl } from "../../src/kagi/api/index";
@@ -29,6 +29,14 @@ const fakeSummarizeResponse = (impl: "scrape" | "api"): SummarizeResponse => ({
   engine_used: impl === "scrape" ? "scrape-default" : "cecil",
   target_language: "EN",
   meta: { impl, cache_hit: false, elapsed_ms: 0 },
+});
+
+// makeClient() spies on shared prototype methods, so without teardown the
+// spies survive into the next test. vi.spyOn returns the *existing* spy when
+// a method is already spied, which means call counts accumulate rather than
+// reset — each test must start from a clean prototype.
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 /** Build a KagiClient with both impls stubbed so we can watch dispatch. */
