@@ -748,4 +748,44 @@ describe("kagiErrorMcp", () => {
 
     expect(result.structuredContent?.message).toBe("a bare string");
   });
+
+  // ADR 0012 deleted three per-class branches in kagiErrorMcp on the claim they
+  // were byte-identical to the generic KagiError fallback. These pin the whole
+  // envelope for exactly those three classes, and were written and run GREEN
+  // against the branches still in place — so if the claim had been wrong, the
+  // deletion would have turned them red. That is the measurement, not the
+  // argument. Do not relax them to toMatchObject.
+  it.each([
+    [
+      new KagiConfirmRequiredError("say please", { engine: "muriel" }),
+      {
+        error_kind: "confirm_required",
+        message: "say please",
+        engine: "muriel",
+      },
+    ],
+    [
+      new KagiUnsupportedInModeError("kagi_extract", "scrape"),
+      {
+        error_kind: "unsupported_in_mode",
+        message: "Tool 'kagi_extract' is not available in mode='scrape'",
+        tool: "kagi_extract",
+        mode: "scrape",
+      },
+    ],
+    [
+      new KagiNotConfiguredError("no API key"),
+      { error_kind: "not_configured", message: "no API key" },
+    ],
+  ])("derives the whole envelope from kind and detail for %s", async (err, structured) => {
+    const result = await call("kagi_fastgpt", { query: "q" }, "scrape", {
+      fastGPT: vi.fn().mockRejectedValue(err),
+    });
+
+    expect(result).toEqual({
+      content: [{ type: "text", text: `Error [${structured.error_kind}]: ${structured.message}` }],
+      structuredContent: structured,
+      isError: true,
+    });
+  });
 });

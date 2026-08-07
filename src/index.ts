@@ -38,23 +38,15 @@ export default {
       const bearer = request.headers.get("Authorization")!.slice("Bearer ".length).trim();
       const rl = await checkAndIncrement(env, bearer);
       if (!rl.allowed) {
-        return new Response(
-          JSON.stringify({
-            error: {
-              code: "rate-limited",
-              message: `${rl.count}/${rl.limit_rpm} requests this minute`,
-            },
-          }),
-          {
-            status: 429,
-            headers: {
-              "Content-Type": "application/json",
-              "Retry-After": String(rl.retry_after_seconds ?? 60),
-              "X-RateLimit-Limit": String(rl.limit_rpm),
-              "X-RateLimit-Remaining": "0",
-            },
+        // Hand-rolled until ADR 0012 gave jsonError a header bag. It happened
+        // to match the envelope; the next one would not have.
+        return jsonError(429, "rate-limited", `${rl.count}/${rl.limit_rpm} requests this minute`, {
+          headers: {
+            "Retry-After": String(rl.retry_after_seconds ?? 60),
+            "X-RateLimit-Limit": String(rl.limit_rpm),
+            "X-RateLimit-Remaining": "0",
           },
-        );
+        });
       }
     }
 

@@ -8,11 +8,13 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  KAGI_ERROR_KINDS,
   KagiAuthError,
   KagiBudgetExceededError,
   KagiCaptchaError,
   KagiConfirmRequiredError,
   KagiError,
+  type KagiErrorKind,
   KagiNotConfiguredError,
   KagiParseError,
   KagiRateLimitError,
@@ -20,6 +22,8 @@ import {
   KagiUnsupportedInModeError,
   KagiUpstreamError,
 } from "../src/kagi/errors";
+import { KAGI_ERROR_STATUS, restErrorCode } from "../src/kagi/http";
+import type { ErrorBody } from "../src/util/errors";
 import { makeEnv } from "./_helpers";
 
 const { createKagiClient } = vi.hoisted(() => ({ createKagiClient: vi.fn() }));
@@ -47,6 +51,12 @@ function post(body: unknown): Request {
 
 async function json(res: Response): Promise<Record<string, unknown>> {
   return (await res.json()) as Record<string, unknown>;
+}
+
+// Typed sibling of json() for the error envelope, so assertions can reach
+// error.detail without widening it back to unknown at every call site.
+async function errorBody(res: Response): Promise<ErrorBody> {
+  return (await res.json()) as ErrorBody;
 }
 
 beforeEach(() => {
@@ -409,6 +419,12 @@ describe("handleSummarize dispatch", () => {
 // The status codes here are the REST contract. A caller distinguishes "your
 // request was wrong" (4xx) from "Kagi is broken" (5xx) from "you are out of
 // budget" (402) purely by this mapping.
+//
+// Per ADR 0012 both the status and the code are functions of `kind` alone. The
+// subclass a caller happens to throw is irrelevant, and the pair below proves
+// it: every typed subclass must agree with the bare base class carrying the
+// same kind. That equivalence is what was broken before — `KagiUpstreamError`
+// returned 502 while `new KagiError("upstream", ...)` returned 500.
 describe("kagiErrorResponse", () => {
   it.each([
     [new KagiNotConfiguredError("nope"), 503, "kagi-not-configured"],
@@ -417,8 +433,10 @@ describe("kagiErrorResponse", () => {
     [new KagiUnsupportedInModeError("kagi_enrich", "scrape"), 400, "kagi-unsupported-in-mode"],
     [new KagiBudgetExceededError(100, 50), 402, "kagi-budget-exceeded"],
     [new KagiRateLimitError(30), 429, "kagi-rate-limit"],
-    [new KagiParseError("no results block"), 502, "kagi-parse-failed"],
+    [new KagiParseError("no results block"), 502, "kagi-parse"],
     [new KagiUpstreamError(503, "Unavailable"), 502, "kagi-upstream"],
+    [new KagiCaptchaError(), 503, "kagi-captcha"],
+    [new KagiTimeoutError(15_000), 504, "kagi-timeout"],
   ])("maps %s", async (err, status, code) => {
     const res = kagiErrorResponse(err);
 
@@ -426,23 +444,63 @@ describe("kagiErrorResponse", () => {
     expect((await json(res)).error).toMatchObject({ code });
   });
 
-  // Not named individually in the mapping — they fall through to the base
-  // class, which derives the code from `kind`.
-  it.each([
-    [new KagiCaptchaError(), "kagi-captcha"],
-    [new KagiTimeoutError(15_000), "kagi-timeout"],
-  ])("falls back to the kind-derived code for %s", async (err, code) => {
-    const res = kagiErrorResponse(err);
+  it.each([...KAGI_ERROR_KINDS])(
+    "gives the bare base class the same status and code as kind %s",
+    async (kind) => {
+      const res = kagiErrorResponse(new KagiError(kind, "raw base class"));
 
-    expect(res.status).toBe(500);
-    expect((await json(res)).error).toMatchObject({ code });
+      expect(res.status).toBe(KAGI_ERROR_STATUS[kind]);
+      expect((await json(res)).error).toMatchObject({ code: restErrorCode(kind) });
+    },
+  );
+
+  // The information REST used to drop on the floor. `detail` is what an MCP
+  // caller has always received; a REST caller now gets the same fields.
+  it("carries retry_after into the body and the Retry-After header", async () => {
+    const res = kagiErrorResponse(new KagiRateLimitError(30));
+
+    expect(res.headers.get("Retry-After")).toBe("30");
+    expect((await errorBody(res)).error.detail).toEqual({ retry_after: 30 });
   });
 
-  it("maps an unrecognized KagiError kind through the base class", async () => {
-    const res = kagiErrorResponse(new KagiError("upstream", "raw base class"));
+  it("carries the budget numbers a caller needs to explain the 402", async () => {
+    const res = kagiErrorResponse(new KagiBudgetExceededError(100, 50));
+
+    expect((await errorBody(res)).error.detail).toEqual({ spent_cents: 100, cap_cents: 50 });
+  });
+
+  it("carries the upstream status through", async () => {
+    const res = kagiErrorResponse(new KagiUpstreamError(503, "Unavailable"));
+
+    expect((await errorBody(res)).error.detail).toEqual({
+      status: 503,
+      status_text: "Unavailable",
+    });
+  });
+
+  // Responses that never had detail must stay byte-identical, so an empty bag
+  // is omitted rather than serialized as `"detail":{}`.
+  it("omits detail entirely when the error carries none", async () => {
+    const body = await errorBody(kagiErrorResponse(new KagiAuthError()));
+
+    expect(body.error).not.toHaveProperty("detail");
+    expect(body).toEqual({ error: { code: "kagi-auth", message: expect.any(String) } });
+  });
+
+  it("sets no Retry-After on an error that carries no retry_after", async () => {
+    expect(kagiErrorResponse(new KagiAuthError()).headers.get("Retry-After")).toBeNull();
+  });
+
+  // Fail-closed guard. A kind with no table entry is a typecheck error, so this
+  // can only happen past the type system — a cast, a JS caller, a value off the
+  // wire. It matters because the failure is silent and inverted: Response
+  // treats `status: undefined` as 200, so an unmapped kind would answer an
+  // error with a success status. The cast below is the point of the test.
+  it("answers an unmapped kind with 500 rather than defaulting to 200", async () => {
+    const res = kagiErrorResponse(new KagiError("bogus" as KagiErrorKind, "off the map"));
 
     expect(res.status).toBe(500);
-    expect((await json(res)).error).toMatchObject({ code: "kagi-upstream" });
+    expect((await json(res)).error).toMatchObject({ code: "kagi-bogus" });
   });
 
   it("maps a plain Error to a 500 with its message", async () => {

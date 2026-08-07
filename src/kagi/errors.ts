@@ -2,17 +2,24 @@
 // decide whether to trigger a refresh, and so MCP tools can map them onto a
 // stable `error_kind` field for callers.
 
-export type KagiErrorKind =
-  | "auth"
-  | "captcha"
-  | "parse"
-  | "upstream"
-  | "rate_limit"
-  | "budget_exceeded"
-  | "unsupported_in_mode"
-  | "confirm_required"
-  | "not_configured"
-  | "timeout";
+// A runtime array rather than a bare union, so both the HTTP mapping in
+// ./http.ts and its tests can iterate every kind. "For every kind" is a claim
+// worth testing exhaustively; a union alone can only be sampled by hand, which
+// is how the REST mapping drifted in the first place. See ADR 0012.
+export const KAGI_ERROR_KINDS = [
+  "auth",
+  "captcha",
+  "parse",
+  "upstream",
+  "rate_limit",
+  "budget_exceeded",
+  "unsupported_in_mode",
+  "confirm_required",
+  "not_configured",
+  "timeout",
+] as const;
+
+export type KagiErrorKind = (typeof KAGI_ERROR_KINDS)[number];
 
 export interface KagiErrorDetail {
   status?: number;

@@ -12,12 +12,7 @@ import { z } from "zod";
 import type { Env } from "./env.js";
 import { createKagiClient, type KagiClient } from "./kagi/client.js";
 import { isToolAvailable } from "./kagi/capability.js";
-import {
-  KagiConfirmRequiredError,
-  KagiError,
-  KagiNotConfiguredError,
-  KagiUnsupportedInModeError,
-} from "./kagi/errors.js";
+import { KagiError } from "./kagi/errors.js";
 import { isSupportedLanguage, SUPPORTED_LANGUAGES } from "./kagi/languages.js";
 import type { SearchResponse } from "./kagi/types.js";
 import { asStructured, mcpError, mcpResult } from "./mcp/result.js";
@@ -602,16 +597,12 @@ export class KagiMcpAgent extends McpAgent<Env> {
   }
 }
 
+// Three per-class branches used to precede the KagiError one, for
+// confirm_required, unsupported_in_mode, and not_configured. Each produced
+// output identical to this generic branch — verified by pinning their whole
+// envelopes in test/workers/mcp-tools.test.ts before removing them, not by
+// reading the code. ADR 0012: neither surface branches on class any more.
 function kagiErrorMcp(err: unknown) {
-  if (err instanceof KagiConfirmRequiredError) {
-    return mcpError({ kind: "confirm_required", message: err.message, detail: err.detail });
-  }
-  if (err instanceof KagiUnsupportedInModeError) {
-    return mcpError({ kind: "unsupported_in_mode", message: err.message, detail: err.detail });
-  }
-  if (err instanceof KagiNotConfiguredError) {
-    return mcpError({ kind: "not_configured", message: err.message });
-  }
   if (err instanceof KagiError) {
     return mcpError({ kind: err.kind, message: err.message, detail: err.detail });
   }
