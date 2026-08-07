@@ -32,7 +32,7 @@ exports[`advertised prompt arguments > match the recorded wire contract 1`] = `
       {
         "description": "Optional cap for the paid-API steps. String because MCP prompt args are strings.",
         "name": "budget_cents",
-        "required": true,
+        "required": false,
       },
     ],
     "name": "deep_research_plan",
