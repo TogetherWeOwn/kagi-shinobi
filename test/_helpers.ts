@@ -19,6 +19,69 @@ class MemKV {
   }
 }
 
+/**
+ * In-memory stand-in for the Meter Durable Object, for the fast `unit`
+ * project. It mirrors the DO's contract but NOT its atomicity — JS is
+ * single-threaded here, so a race cannot be reproduced against it.
+ *
+ * Tests that assert the counters actually serialize belong in test/workers/,
+ * against the real DO. This stub exists for tests that merely depend on the
+ * guard admitting or refusing (endpoint behavior), not on how it counts.
+ */
+class MemMeter {
+  private rate = new Map<number, number>();
+  private spend = new Map<string, number>();
+
+  checkRate(limit: number, minute: number, msIntoMinute: number) {
+    if (limit <= 0) return { allowed: true, limit_rpm: 0, count: 0 };
+    const current = this.rate.get(minute) ?? 0;
+    if (current >= limit) {
+      return {
+        allowed: false,
+        limit_rpm: limit,
+        count: current,
+        retry_after_seconds: Math.max(1, Math.ceil((60_000 - msIntoMinute) / 1000)),
+      };
+    }
+    this.rate.set(minute, current + 1);
+    return { allowed: true, limit_rpm: limit, count: current + 1 };
+  }
+
+  reserveSpend(month: string, projectedCents: number, capCents: number) {
+    const spent = this.spend.get(month) ?? 0;
+    if (capCents <= 0 || spent + projectedCents > capCents) {
+      return { ok: false, spent_cents: spent, cap_cents: capCents };
+    }
+    this.spend.set(month, spent + projectedCents);
+    return { ok: true, spent_cents: spent + projectedCents, cap_cents: capCents };
+  }
+
+  settleSpend(month: string, deltaCents: number) {
+    const next = Math.max(0, (this.spend.get(month) ?? 0) + deltaCents);
+    this.spend.set(month, next);
+    return next;
+  }
+
+  spendSnapshot(month: string) {
+    return this.spend.get(month) ?? 0;
+  }
+}
+
+/** Namespace shim: one MemMeter per name, matching real DO addressing. */
+function makeMemMeterNamespace() {
+  const instances = new Map<string, MemMeter>();
+  return {
+    idFromName: (name: string) => name,
+    get: (id: string) => {
+      const existing = instances.get(id);
+      if (existing) return existing;
+      const created = new MemMeter();
+      instances.set(id, created);
+      return created;
+    },
+  };
+}
+
 export interface TestEnv extends Env {
   TOKEN_KV: MemKV & KVNamespace;
 }
@@ -28,6 +91,7 @@ export function makeEnv(overrides: Partial<Env> = {}): TestEnv {
   return {
     ADMIN_TOKEN: "test-admin",
     TOKEN_KV: kv as unknown as MemKV & KVNamespace,
+    METER: makeMemMeterNamespace() as unknown as Env["METER"],
     TOKEN_KV_KEY: "session_token",
     AUTO_REFRESH_ENABLED: "false",
     KAGI_MODE: "scrape",

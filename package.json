@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "cf-typegen": "wrangler types",
     "gen:kagi-types": "openapi-typescript https://kagi.redocly.app/openapi.yaml -o src/kagi/api/generated.d.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@cloudflare/puppeteer": "^1.1.0",
@@ -21,9 +22,10 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.4",
+    "@vitest/coverage-istanbul": "^4.1.10",
     "openapi-typescript": "^7.13.0",
     "typescript": "^5.7.3",
-    "vitest": "^2.1.9",
+    "vitest": "^4.1.10",
     "wrangler": "^4.110.0"
   }
 }

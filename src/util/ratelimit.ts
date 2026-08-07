@@ -1,20 +1,20 @@
-// Per-bearer rate limiter — one KV counter per (bearer-hash, epoch minute).
+// Per-bearer rate limiter.
 //
-// TTL is 90s so counters auto-clean without a cron. Since KV puts are
-// eventually consistent globally but strongly consistent within a namespace
-// region, we accept some over-count under bursty concurrent load; that's a
-// safe direction (we throttle a hair too aggressively, never too loosely).
+// Counters live in the Meter Durable Object, addressed by
+// idFromName(sha256_16(bearer)) — one instance per bearer, so buckets are
+// naturally sharded and each instance lands near the caller that created it.
+// The bearer is hashed before use as the instance name: the raw value never
+// reaches storage or logs.
 //
-// The bearer is SHA-256'd before use as a key — never logged in plaintext.
+// This used to be a KV read-then-write, which under-counted under concurrency
+// (see docs/adr/0006-serialize-rate-and-spend-counters.md). The check and the
+// increment now happen inside a single synchronous DO method, so they cannot
+// interleave.
 
 import type { Env } from "../env.js";
+import type { RateVerdict } from "../meter/meter.js";
 
-export interface RateLimitResult {
-  allowed: boolean;
-  limit_rpm: number;
-  count: number;
-  retry_after_seconds?: number;
-}
+export type RateLimitResult = RateVerdict;
 
 async function bearerHash(bearer: string): Promise<string> {
   const bytes = new TextEncoder().encode(bearer);
@@ -40,16 +40,8 @@ export async function checkAndIncrement(
   const limit = readLimit(env);
   if (limit <= 0) return { allowed: true, limit_rpm: 0, count: 0 };
 
-  const minute = Math.floor(now.getTime() / 60_000);
-  const key = `rl:${await bearerHash(bearer)}:${minute}`;
-  const currentRaw = await env.TOKEN_KV.get(key);
-  const current = currentRaw ? Number.parseInt(currentRaw, 10) : 0;
-
-  if (current >= limit) {
-    const nextMinute = (minute + 1) * 60_000;
-    const retry = Math.max(1, Math.ceil((nextMinute - now.getTime()) / 1000));
-    return { allowed: false, limit_rpm: limit, count: current, retry_after_seconds: retry };
-  }
-  await env.TOKEN_KV.put(key, String(current + 1), { expirationTtl: 90 });
-  return { allowed: true, limit_rpm: limit, count: current + 1 };
+  const ms = now.getTime();
+  const minute = Math.floor(ms / 60_000);
+  const id = env.METER.idFromName(await bearerHash(bearer));
+  return env.METER.get(id).checkRate(limit, minute, ms % 60_000);
 }
