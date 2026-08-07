@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { fetchSmallWebRss, scrapeSmallWeb } from "../../src/kagi/scrape/smallweb";
-import { KagiAuthError, KagiParseError } from "../../src/kagi/errors";
+import { KagiAuthError, KagiParseError, KagiUpstreamError } from "../../src/kagi/errors";
 import { restoreFetch, stubFetch } from "../_helpers";
 
 const RSS_FIXTURE = `<?xml version="1.0"?>
@@ -129,11 +129,123 @@ describe("scrapeSmallWeb (no q → RSS)", () => {
   });
 });
 
+const TOKEN = "sess-abc";
+
+/** Two ordinary hits, in the markup kagi.com/html/search returns. */
+const SEARCH_HTML = `<!doctype html><html><body>
+  <div class="search-result">
+    <div class="__sri-title">
+      <a class="__sri_title_link" href="https://alice.example/post/1">Alice on Linux</a>
+    </div>
+    <div class="__sri-desc">Alice's take.</div>
+  </div>
+  <div class="search-result">
+    <div class="__sri-title">
+      <a class="__sri_title_link" href="https://bob.example/blog/2">Bob on Linux</a>
+    </div>
+    <div class="__sri-desc">Bob's take.</div>
+  </div>
+</body></html>`;
+
 describe("scrapeSmallWeb (q → search)", () => {
   it("requires a session token when q is set", async () => {
     stubFetch(async () => new Response("", { status: 200 }));
     await expect(scrapeSmallWeb({ q: "linux" }, undefined)).rejects.toBeInstanceOf(
       KagiAuthError,
+    );
+  });
+
+  it("queries /html/search with the smallweb lens and the session cookie", async () => {
+    const seen: { url?: string; headers?: Record<string, string> } = {};
+    stubFetch(async (input, init) => {
+      seen.url = String(input);
+      seen.headers = init?.headers as Record<string, string>;
+      return new Response(SEARCH_HTML, { status: 200 });
+    });
+
+    await scrapeSmallWeb({ q: "linux" }, TOKEN);
+
+    const url = new URL(seen.url as string);
+    expect(url.origin + url.pathname).toBe("https://kagi.com/html/search");
+    expect(url.searchParams.get("q")).toBe("linux");
+    expect(url.searchParams.get("l")).toBe("smallweb");
+    expect(seen.headers?.Cookie).toBe(`kagi_session=${TOKEN}`);
+  });
+
+  it("normalizes hits into ranked results tagged smallweb_search", async () => {
+    stubFetch(async () => new Response(SEARCH_HTML, { status: 200 }));
+
+    const resp = await scrapeSmallWeb({ q: "linux" }, TOKEN);
+
+    expect(resp.query).toBe("linux");
+    expect(resp.results).toHaveLength(2);
+    expect(resp.results[0]).toMatchObject({
+      rank: 1,
+      url: "https://alice.example/post/1",
+      title: "Alice on Linux",
+      source_domain: "alice.example",
+      source_impl: "scrape",
+      props: { source: "smallweb_search" },
+    });
+    expect(resp.results[1].rank).toBe(2);
+    expect(resp.meta.impl).toBe("scrape");
+  });
+
+  it("honors the limit", async () => {
+    stubFetch(async () => new Response(SEARCH_HTML, { status: 200 }));
+
+    const resp = await scrapeSmallWeb({ q: "linux", limit: 1 }, TOKEN);
+
+    expect(resp.results).toHaveLength(1);
+  });
+
+  it("maps 401 and 403 to KagiAuthError", async () => {
+    stubFetch(async () => new Response("denied", { status: 401 }));
+    await expect(scrapeSmallWeb({ q: "linux" }, TOKEN)).rejects.toBeInstanceOf(
+      KagiAuthError,
+    );
+
+    stubFetch(async () => new Response("denied", { status: 403 }));
+    await expect(scrapeSmallWeb({ q: "linux" }, TOKEN)).rejects.toBeInstanceOf(
+      KagiAuthError,
+    );
+  });
+
+  it("maps any other non-2xx to KagiUpstreamError", async () => {
+    stubFetch(async () => new Response("boom", { status: 500, statusText: "Boom" }));
+
+    await expect(scrapeSmallWeb({ q: "linux" }, TOKEN)).rejects.toBeInstanceOf(
+      KagiUpstreamError,
+    );
+  });
+
+  it("returns an empty result list when the search yields nothing", async () => {
+    stubFetch(async () => new Response("<html><body></body></html>", { status: 200 }));
+
+    const resp = await scrapeSmallWeb({ q: "linux" }, TOKEN);
+
+    expect(resp.results).toEqual([]);
+  });
+});
+
+describe("feed parser guard rails", () => {
+  it("fails loudly when entries exist but none yield a link", async () => {
+    // Distinct from the no-<entry> case above: the dialect matches, blocks are
+    // found, and every one of them parses to nothing. Silently returning []
+    // here is what made the original bug invisible.
+    stubFetch(
+      async () =>
+        new Response(
+          `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">
+             <entry><title>No link here</title></entry>
+             <entry><title>Nor here</title></entry>
+           </feed>`,
+          { status: 200 },
+        ),
+    );
+
+    await expect(fetchSmallWebRss()).rejects.toThrow(
+      /parsed 0 of 2 entries — feed markup changed/,
     );
   });
 });

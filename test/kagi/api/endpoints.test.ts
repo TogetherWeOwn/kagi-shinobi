@@ -9,6 +9,7 @@ import { apiFastGPT } from "../../../src/kagi/api/fastgpt";
 import { apiSummarize } from "../../../src/kagi/api/summarize";
 import { apiEnrichNews, apiEnrichWeb } from "../../../src/kagi/api/enrich";
 import { readSpend } from "../../../src/kagi/api/cost";
+import { KagiApiClient } from "../../../src/kagi/api/client";
 import {
   KagiConfirmRequiredError,
   KagiError,
@@ -251,6 +252,96 @@ describe("apiEnrich", () => {
     expect(resp.results).toHaveLength(0);
     expect(resp.meta.cost_cents).toBe(0);
     expect(await readSpend(env)).toBe(0);
+  });
+});
+
+describe("KagiApiClient transport", () => {
+  /** A fetch that never settles on its own, but honors the abort signal. */
+  function hangingFetch() {
+    return (_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const err = new Error("The operation was aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      });
+  }
+
+  it("converts the abort into a typed timeout error naming the budget", async () => {
+    stubFetch(hangingFetch());
+    const client = new KagiApiClient(makeEnv(CAPACIOUS));
+
+    await expect(
+      client.request({ method: "GET", url: "https://kagi.com/api/v1/x", timeout_ms: 5 }),
+    ).rejects.toThrow(/timed out after 5ms/);
+  });
+
+  it("rethrows a transport failure it does not recognize", async () => {
+    stubFetch(async () => {
+      throw new TypeError("network unreachable");
+    });
+    const client = new KagiApiClient(makeEnv(CAPACIOUS));
+
+    await expect(
+      client.request({ method: "GET", url: "https://kagi.com/api/v1/x" }),
+    ).rejects.toBeInstanceOf(TypeError);
+  });
+
+  it("passes a KagiError through untouched rather than wrapping it twice", async () => {
+    stubFetch(fakeFetch({ error: "nope" }, { status: 502 }));
+    const client = new KagiApiClient(makeEnv(CAPACIOUS));
+
+    await expect(
+      client.request({ method: "GET", url: "https://kagi.com/api/v1/x" }),
+    ).rejects.toBeInstanceOf(KagiUpstreamError);
+  });
+
+  it("prefers the X-Kagi-Trace header over the envelope trace", async () => {
+    stubFetch(
+      fakeFetch(
+        { meta: { trace: "from-body" }, data: {} },
+        { headers: { "X-Kagi-Trace": "from-header" } },
+      ),
+    );
+    const client = new KagiApiClient(makeEnv(CAPACIOUS));
+
+    const resp = await client.request({ method: "GET", url: "https://kagi.com/api/v1/x" });
+
+    expect(resp.trace_id).toBe("from-header");
+  });
+});
+
+describe("search response buckets", () => {
+  it("flattens direct_answer to its first snippet", async () => {
+    stubFetch(
+      fakeFetch({
+        meta: {},
+        data: {
+          search: [],
+          direct_answer: [{ snippet: "42", title: "Answer", url: "https://a" }],
+        },
+      }),
+    );
+    const env = makeEnv(CAPACIOUS);
+
+    const resp = await apiSearch(env, { query: "meaning of life" });
+
+    expect(resp.buckets?.direct_answer).toBe("42");
+  });
+
+  it("omits direct_answer when the first item carries no snippet", async () => {
+    stubFetch(
+      fakeFetch({
+        meta: {},
+        data: { search: [], direct_answer: [{ title: "Answer", url: "https://a" }] },
+      }),
+    );
+    const env = makeEnv(CAPACIOUS);
+
+    const resp = await apiSearch(env, { query: "x" });
+
+    expect(resp.buckets?.direct_answer).toBeUndefined();
   });
 });
 
