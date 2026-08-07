@@ -58,12 +58,15 @@ source_repo: https://github.com/Rick7C2/kagi-shinobi
 
 ## Action
 
-Use camelCase naming convention
+Name source files as a single lowercase word; use a directory when the concept
+needs more than one
 
 ## Evidence
 
-- Analyzed file naming patterns in repository
-- Dominant pattern: camelCase
+- Corrected by hand: the generator reported camelCase, but every file in `src/`
+  is a single lowercase word (`rest.ts`, `landing.ts`, `http.ts`). A name with
+  no separator matches a camelCase test vacuously.
+- Multi-word concepts become directories: `src/kagi/api/`, `src/mcp/`, `src/token/`
 
 ---
 id: kagi-shinobi-import-relative
@@ -118,11 +121,17 @@ source_repo: https://github.com/Rick7C2/kagi-shinobi
 
 ## Action
 
-Place tests in the tests/ or __tests__/ directory, mirroring src structure
+Place tests in `test/`, mirroring src structure. Anything importing `cloudflare:*`
+must go under `test/workers/` instead
 
 ## Evidence
 
-- Separate test directory pattern detected
+- Corrected by hand: the directory is `test/`, not `tests/` or `__tests__/`
+- Two vitest projects: `unit` (Node) and `workers` (workerd via Miniflare).
+  `vitest.config.ts` includes `test/**/*.test.ts` for unit but excludes
+  `test/workers/**`, which the workers project owns.
+- The Node ESM loader cannot resolve `cloudflare:workers` at all, so a test that
+  reaches it transitively fails to import unless it lives in `test/workers/`
 - Tests live in dedicated test folders
 
 ---
@@ -202,6 +211,10 @@ Write unit, integration tests to match project standards
 
 ## Evidence
 
-- Test types detected: unit, integration
-- Coverage config: no
+- Test types detected: unit, integration, plus an E2E layer in `test/e2e/`
+  (Playwright, separate runner, `npm run test:e2e`)
+- Coverage config: yes — corrected by hand. `vitest.config.ts` sets istanbul
+  `thresholds` of 95/90/95/95, currently measuring 98.66 / 92.91 / 99.64 / 99.61.
+  `npm run test:coverage` is the entry point that enforces them; plain
+  `npm test` does not.
 

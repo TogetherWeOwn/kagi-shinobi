@@ -28,14 +28,28 @@ Activate this skill when:
 
 ## Commit Conventions
 
-Follow these commit message conventions based on 2 analyzed commits.
+Follow these commit message conventions. Corrected by hand: the generator
+analyzed 2 commits, which is too small a window to characterize a repo with 29
+on `main`. The prefixes and style below are read from the full history.
 
 ### Commit Style: Conventional Commits
 
+The 13 most recent commits on `main` are all conventional. The free-form
+`S1`-`S9` messages are the oldest in the repo and are not the pattern to follow.
+
 ### Prefixes Used
 
+- `feat`
 - `fix`
+- `test`
+- `chore` (with scopes, e.g. `chore(deps):`, `chore(deps-dev):`)
 - `docs`
+- `ci`
+
+### Message Style
+
+Subjects are long and descriptive rather than clipped, and carry a substantial
+body explaining *why*. See `e21c2a4` and `f6a54e7` for the house style.
 
 ### Message Guidelines
 
@@ -87,10 +101,16 @@ src/
 
 | Element | Convention |
 |---------|------------|
-| Files | camelCase |
+| Files | single lowercase word (`rest.ts`, `landing.ts`, `http.ts`) |
 | Functions | camelCase |
 | Classes | PascalCase |
 | Constants | SCREAMING_SNAKE_CASE |
+
+Corrected by hand. The generator reported files as camelCase; every file in
+`src/` is in fact a single lowercase word, which a naive detector reads as
+camelCase because it contains no separator. Obeying the generated value would
+license `myNewThing.ts`. Multi-word concepts get a directory instead
+(`src/kagi/api/`, `src/mcp/`, `src/token/`).
 
 ### Import Style: Relative Imports
 
@@ -151,14 +171,23 @@ This project uses **custom error classes** for specific error types.
 *Standard error handling pattern*
 
 ```typescript
+import { logWarn } from "./util/log.js"
+
 try {
   const result = await riskyOperation()
   return result
-} catch (error) {
-  console.error('Operation failed:', error)
-  throw new Error('User-friendly message')
+} catch (err) {
+  // `error`, not `msg` — logWarn spreads fields last, so a field named `msg`
+  // would overwrite the log message and leave the line without context.
+  logWarn("operation failed", { error: err instanceof Error ? err.message : String(err) })
+  throw new Error("User-friendly message")
 }
 ```
+
+Corrected by hand. The generated example used `console.error`, which this repo
+forbids: `.claude/rules/ecc/typescript/coding-style.md` says "No `console.log`
+statements in production code", and `console.*` appears in exactly one file,
+`src/util/log.ts`, behind the structured logger above.
 
 ## Best Practices
 
@@ -169,7 +198,11 @@ Based on analysis of the codebase, follow these practices:
 - Use conventional commit format (feat:, fix:, etc.)
 - Write tests using vitest
 - Follow *.test.ts naming pattern
-- Use camelCase for file names
+- Name source files as a single lowercase word; reach for a directory when the
+  concept needs two
+- Put anything importing `cloudflare:*` under `test/workers/` — the Node ESM
+  loader cannot resolve those specifiers at all, so it belongs in the workerd
+  project or it will not run
 - Prefer named exports
 
 ### Don't
