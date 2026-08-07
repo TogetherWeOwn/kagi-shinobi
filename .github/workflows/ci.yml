@@ -27,7 +27,13 @@ jobs:
       - run: npm ci
       # Regenerate the ambient Cloudflare.Env types from wrangler.jsonc.
       # No auth needed — pure type generation.
-      - run: npx wrangler types
+      #
+      # --strict-vars=false must match package.json's cf-typegen script.
+      # worker-configuration.d.ts is gitignored, so this step is what CI type
+      # checks against; dropping the flag here would regenerate vars as literal
+      # types and fail typecheck even though the committed source is fine.
+      # See the header of src/env.ts.
+      - run: npx wrangler types --strict-vars=false
       - run: npm run typecheck
       # test:coverage, not test — same suite, but it is the only entry point
       # that enforces the thresholds in vitest.config.ts. Under plain `npm
