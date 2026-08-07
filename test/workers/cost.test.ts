@@ -139,6 +139,92 @@ describe("guardBillable", () => {
   });
 });
 
+// ADR 0006 lists this as a risk and asserts the behavior, but until now nothing
+// verified it: "if it is unreachable, billable calls must fail closed and
+// refuse, never fall back to unmetered." The endpoint-level counterpart — that
+// no billable request escapes the worker — lives in
+// test/kagi/api/billable-fail-closed.test.ts.
+describe("the Meter being unreachable", () => {
+  const UNREACHABLE = "Durable Object unreachable";
+
+  /** Every method rejects, as if the DO could not be reached at all. */
+  function deadMeterEnv(cents: string) {
+    const dead = async (): Promise<never> => {
+      throw new Error(UNREACHABLE);
+    };
+    return {
+      ...env,
+      MAX_API_CENTS_PER_MONTH: cents,
+      METER: {
+        idFromName: (name: string) => name,
+        get: () => ({ reserveSpend: dead, settleSpend: dead, spendSnapshot: dead }),
+      },
+    } as unknown as typeof env;
+  }
+
+  /**
+   * Reserve reaches the real DO; settle does not. This is the realistic flake —
+   * the Meter is there at admission and gone by the time the call comes back.
+   */
+  function settleFailsEnv(cents: string) {
+    return {
+      ...env,
+      MAX_API_CENTS_PER_MONTH: cents,
+      METER: {
+        idFromName: (name: string) => env.METER.idFromName(name),
+        get: (id: DurableObjectId) => {
+          const real = env.METER.get(id);
+          return {
+            reserveSpend: (month: string, projected: number, cap: number) =>
+              real.reserveSpend(month, projected, cap),
+            spendSnapshot: (month: string) => real.spendSnapshot(month),
+            settleSpend: async (): Promise<never> => {
+              throw new Error(UNREACHABLE);
+            },
+          };
+        },
+      },
+    } as unknown as typeof env;
+  }
+
+  it("refuses admission rather than letting an unmetered call through", async () => {
+    await expect(guardBillable(deadMeterEnv("100"), 1)).rejects.toThrow(UNREACHABLE);
+  });
+
+  it("does not disguise the outage as a budget refusal", async () => {
+    // "Budget exceeded" would send an operator to raise a cap that was fine.
+    await expect(guardBillable(deadMeterEnv("100"), 1)).rejects.not.toBeInstanceOf(
+      KagiBudgetExceededError,
+    );
+  });
+
+  it("still refuses when the cap is 0 and the Meter is down", async () => {
+    // Worth knowing: there is no local short-circuit for a 0 cap. readCap is
+    // local, but the cap is passed INTO reserveSpend and the refusal is decided
+    // inside the DO, so even the default deny-everything config pays the round
+    // trip. With the Meter down the error is the transport failure rather than
+    // KagiBudgetExceededError — different message, same refusal, which is all
+    // the safety property requires.
+    await expect(guardBillable(deadMeterEnv("0"), 1)).rejects.toThrow(UNREACHABLE);
+  });
+
+  it("keeps the reservation on the books when settle cannot reach the Meter", async () => {
+    // A lost settle must bias toward over-throttling, never under. The money is
+    // already spent upstream at this point; forgetting the reservation would
+    // hand the next caller budget that no longer exists.
+    const guard = await guardBillable(settleFailsEnv("100"), 30);
+    await expect(guard.settle(0)).rejects.toThrow(UNREACHABLE);
+
+    expect(await readSpend(capEnv("100"))).toBe(30);
+  });
+
+  it("budgetSnapshot rejects instead of reporting a reassuring zero", async () => {
+    // Swallowing this would report spent_cents: 0 — full budget remaining —
+    // at exactly the moment nobody can tell what has been spent.
+    await expect(budgetSnapshot(deadMeterEnv("100"))).rejects.toThrow(UNREACHABLE);
+  });
+});
+
 describe("budgetSnapshot", () => {
   it("reports cap, spend, and remaining for the current month", async () => {
     const e = capEnv("50");
