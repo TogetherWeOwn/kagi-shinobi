@@ -1,6 +1,7 @@
 // /admin/token and /admin/refresh handlers.
 
 import type { Env } from "../env.js";
+import { requireBearer } from "../util/auth.js";
 import { jsonError, jsonOk } from "../util/errors.js";
 import { loadToken, saveToken } from "./store.js";
 import { refreshTokenViaBrowser } from "./refresh.js";
@@ -34,7 +35,18 @@ export async function handleAdminRefresh(_request: Request, env: Env): Promise<R
   return jsonOk({ ok: true, source: "browser-refresh" });
 }
 
-export async function handleHealth(_request: Request, env: Env): Promise<Response> {
+// /health is public so uptime probes can reach it without a credential, but
+// token presence, staleness, the last-refresh timestamp, and the refresh
+// source describe the operator's credential state — an anonymous caller gets
+// liveness only. A valid bearer unlocks the detail. A wrong bearer is treated
+// as anonymous rather than rejected, so the probe keeps working even if an
+// operator misconfigures the token it sends.
+export async function handleHealth(request: Request, env: Env): Promise<Response> {
+  const isAuthenticated = requireBearer(request, env) === null;
+  if (!isAuthenticated) {
+    return jsonOk({ ok: true });
+  }
+
   const envelope = await loadToken(env);
   const tokenStatus = !envelope
     ? "missing"

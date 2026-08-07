@@ -19,7 +19,7 @@ from stdio to Streamable HTTP).
 | `/summarize` | POST `{url, summary_type?, target_language?}` | Bearer | Direct summarize |
 | `/admin/token` | POST `{token}` | Bearer | Manually rotate session token |
 | `/admin/refresh` | POST | Bearer | Force Browser Rendering refresh |
-| `/health` | GET | none | Liveness + token-staleness indicator |
+| `/health` | GET | none / Bearer | Liveness for anyone; token-staleness detail only with the Bearer |
 
 The Bearer token is the `ADMIN_TOKEN` secret. Use `Authorization: Bearer <token>`.
 
@@ -84,7 +84,8 @@ curl -X POST https://kagi-shinobi.<subdomain>.workers.dev/search \
   reads the fresh `kagi_session` cookie, and writes it to KV.
 - Manual override: `POST /admin/token` accepts a new token any time.
 - If auto-refresh is disabled or fails, `/search` and `/summarize` return
-  `401 kagi-token-stale` and `/health` reports `"token": "stale"`.
+  `401 kagi-token-stale` and `/health` reports `"token": "stale"` — to callers
+  presenting the Bearer. Without it, `/health` returns `{"ok": true}` only.
 
 Set `AUTO_REFRESH_ENABLED=false` in `wrangler.jsonc` `vars` if you don't want
 to pay for Browser Rendering — you'll rotate tokens manually via

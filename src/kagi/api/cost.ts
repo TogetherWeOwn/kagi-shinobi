@@ -70,7 +70,7 @@ export async function guardBillable(env: Env, projectedCents: number): Promise<G
   };
 }
 
-/** Backs /health and the api-status MCP resource. */
+/** Backs the api-status MCP resource. /health does not report spend. */
 export async function budgetSnapshot(env: Env): Promise<{
   cap_cents: number;
   spent_cents: number;
