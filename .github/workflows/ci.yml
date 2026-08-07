@@ -20,7 +20,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # wrangler requires >= 22; the `wrangler types` step below fails
+          # outright on 20, before typecheck or tests ever run.
+          node-version: "22"
           cache: "npm"
       - run: npm ci
       # Regenerate the ambient Cloudflare.Env types from wrangler.jsonc.
