@@ -83,6 +83,12 @@ function propertyOf(schema: Record<string, unknown>, name: string): Record<strin
   return properties[name];
 }
 
+/** Prompt message content is a union; narrow to the text arm before asserting. */
+function promptText(content: { type: string }): string {
+  if (content.type !== "text") throw new Error(`expected text content, got ${content.type}`);
+  return (content as { type: "text"; text: string }).text;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   getResearchStub.mockReturnValue({});
@@ -191,6 +197,43 @@ describe("unknown arguments", () => {
 });
 
 describe("advertised prompt arguments", () => {
+  // deep_research_plan's budget_cents describes itself as an "Optional cap",
+  // and its handler defends with `budget_cents ?? "0"`. Both are only true if
+  // the schema says so.
+  it("mark budget_cents optional, as its description and handler assume", async () => {
+    const client = await connectAgent("api");
+    const { prompts } = await client.listPrompts();
+
+    const plan = prompts.find((prompt) => prompt.name === "deep_research_plan");
+    const budget = plan?.arguments?.find((arg) => arg.name === "budget_cents");
+
+    expect(budget?.required).toBe(false);
+  });
+
+  // The `budget_cents ?? "0"` fallback in prompts.ts was unreachable while the
+  // argument was required. These two pin both sides of it now that it is not.
+  it("let deep_research_plan be rendered without a budget", async () => {
+    const client = await connectAgent("api");
+
+    const { messages } = await client.getPrompt({
+      name: "deep_research_plan",
+      arguments: { question: "why is the sky blue" },
+    });
+
+    expect(promptText(messages[0].content)).toContain("Budget cap: 0 cents");
+  });
+
+  it("render the supplied budget when one is given", async () => {
+    const client = await connectAgent("api");
+
+    const { messages } = await client.getPrompt({
+      name: "deep_research_plan",
+      arguments: { question: "why is the sky blue", budget_cents: "25" },
+    });
+
+    expect(promptText(messages[0].content)).toContain("Budget cap: 25 cents");
+  });
+
   it("match the recorded wire contract", async () => {
     const client = await connectAgent("api");
     const { prompts } = await client.listPrompts();

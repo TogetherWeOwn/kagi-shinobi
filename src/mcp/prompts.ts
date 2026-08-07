@@ -52,7 +52,10 @@ export function registerPrompts(server: McpServer): void {
     "Approve a research plan (sub-queries + budget) before firing kagi_research_create_run.",
     {
       question: z.string(),
-      budget_cents: z.string().describe("Optional cap for the paid-API steps. String because MCP prompt args are strings."),
+      budget_cents: z
+        .string()
+        .optional()
+        .describe("Optional cap for the paid-API steps. String because MCP prompt args are strings."),
     },
     ({ question, budget_cents }) => ({
       messages: [
