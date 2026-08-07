@@ -1,0 +1,220 @@
+# Instincts generated from https://github.com/Rick7C2/kagi-shinobi
+# Generated: 2026-08-07T17:06:38.677Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: kagi-shinobi-commit-conventional
+trigger: "when writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: https://github.com/Rick7C2/kagi-shinobi
+---
+
+# Kagi Shinobi Commit Conventional
+
+## Action
+
+Use conventional commit format with prefixes: fix, docs
+
+## Evidence
+
+- 2 commits analyzed
+- Detected conventional commit pattern
+- Examples: fix: one error vocabulary — REST status stops depending on which class was thrown, docs: review artifact for PR #28
+
+---
+id: kagi-shinobi-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/Rick7C2/kagi-shinobi
+---
+
+# Kagi Shinobi Commit Length
+
+## Action
+
+Write moderate-length commit messages (~57 characters)
+
+## Evidence
+
+- Average commit message length: 57 chars
+- Based on 2 commits
+
+---
+id: kagi-shinobi-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Rick7C2/kagi-shinobi
+---
+
+# Kagi Shinobi Naming Files
+
+## Action
+
+Name source files as a single lowercase word; use a directory when the concept
+needs more than one
+
+## Evidence
+
+- Corrected by hand: the generator reported camelCase, but every file in `src/`
+  is a single lowercase word (`rest.ts`, `landing.ts`, `http.ts`). A name with
+  no separator matches a camelCase test vacuously.
+- Multi-word concepts become directories: `src/kagi/api/`, `src/mcp/`, `src/token/`
+
+---
+id: kagi-shinobi-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Rick7C2/kagi-shinobi
+---
+
+# Kagi Shinobi Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: kagi-shinobi-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/Rick7C2/kagi-shinobi
+---
+
+# Kagi Shinobi Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: kagi-shinobi-test-separate
+trigger: "when writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/Rick7C2/kagi-shinobi
+---
+
+# Kagi Shinobi Test Separate
+
+## Action
+
+Place tests in `test/`, mirroring src structure. Anything importing `cloudflare:*`
+must go under `test/workers/` instead
+
+## Evidence
+
+- Corrected by hand: the directory is `test/`, not `tests/` or `__tests__/`
+- Two vitest projects: `unit` (Node) and `workers` (workerd via Miniflare).
+  `vitest.config.ts` includes `test/**/*.test.ts` for unit but excludes
+  `test/workers/**`, which the workers project owns.
+- The Node ESM loader cannot resolve `cloudflare:workers` at all, so a test that
+  reaches it transitively fails to import unless it lives in `test/workers/`
+- Tests live in dedicated test folders
+
+---
+id: kagi-shinobi-test-framework
+trigger: "when writing tests"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/Rick7C2/kagi-shinobi
+---
+
+# Kagi Shinobi Test Framework
+
+## Action
+
+Use vitest as the test framework
+
+## Evidence
+
+- Test framework detected: vitest
+- File pattern: *.test.ts
+
+---
+id: kagi-shinobi-test-naming
+trigger: "when creating a test file"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/Rick7C2/kagi-shinobi
+---
+
+# Kagi Shinobi Test Naming
+
+## Action
+
+Name test files using the pattern: *.test.ts
+
+## Evidence
+
+- File pattern: *.test.ts
+- Consistent across test files
+
+---
+id: kagi-shinobi-test-mocking
+trigger: "when mocking dependencies in tests"
+confidence: 0.75
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/Rick7C2/kagi-shinobi
+---
+
+# Kagi Shinobi Test Mocking
+
+## Action
+
+Use vi.mock for mocking
+
+## Evidence
+
+- Mocking pattern detected: vi.mock
+- Consistent across test files
+
+---
+id: kagi-shinobi-test-types
+trigger: "when planning tests for a feature"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/Rick7C2/kagi-shinobi
+---
+
+# Kagi Shinobi Test Types
+
+## Action
+
+Write unit, integration tests to match project standards
+
+## Evidence
+
+- Test types detected: unit, integration, plus an E2E layer in `test/e2e/`
+  (Playwright, separate runner, `npm run test:e2e`)
+- Coverage config: yes — corrected by hand. `vitest.config.ts` sets istanbul
+  `thresholds` of 95/90/95/95, currently measuring 98.66 / 92.91 / 99.64 / 99.61.
+  `npm run test:coverage` is the entry point that enforces them; plain
+  `npm test` does not.
+
