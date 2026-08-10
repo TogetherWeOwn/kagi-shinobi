@@ -123,7 +123,8 @@ floors when the numbers rise. Never delete a test to move a number.
 
 ## Rules
 
-@.claude/rules/ecc/typescript/coding-style.md
-@.claude/rules/ecc/typescript/patterns.md
-@.claude/rules/ecc/typescript/security.md
-@.claude/rules/ecc/typescript/testing.md
+The TypeScript pack in `.claude/rules/ecc/typescript/` carries `paths:` frontmatter, so every file
+in it loads on its own when a matching file is touched — which in this repo is essentially always.
+Do **not** add `@` imports for them: `@path` imports are eager, load at launch, and defeat the very
+`paths:` scoping those files declare. Four such imports here previously force-loaded 6,230 B every
+session, including sessions that touched no TypeScript at all.
