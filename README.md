@@ -14,14 +14,54 @@ from stdio to Streamable HTTP).
 
 | Path | Method | Auth | Purpose |
 |---|---|---|---|
-| `/mcp` | POST/GET | Bearer | MCP Streamable HTTP transport (McpAgent) |
-| `/search` | POST `{queries, limit?}` | Bearer | Direct search — max 20 queries per request |
-| `/summarize` | POST `{url, summary_type?, target_language?}` | Bearer | Direct summarize |
-| `/admin/token` | POST `{token}` | Bearer | Manually rotate session token |
-| `/admin/refresh` | POST | Bearer | Force Browser Rendering refresh |
+| `/mcp` | POST/GET | Admin or client key | MCP Streamable HTTP transport (McpAgent) |
+| `/search` | POST `{queries, limit?}` | Admin or client key | Direct search — max 20 queries per request |
+| `/search` | GET `?q=&format=json&limit=` | Admin or client key | One query, SearXNG-shaped `{results:[{url,title,content}]}` for `json_engine` |
+| `/summarize` | POST `{url, summary_type?, target_language?}` | Admin | Direct summarize |
+| `/admin/token` | POST `{token}` | Admin | Manually rotate session token |
+| `/admin/refresh` | POST | Admin | Force Browser Rendering refresh |
 | `/health` | GET | none / Bearer | Liveness for anyone; token-staleness detail plus the deployed `BUILD_SHA` only with the Bearer |
 
-The Bearer token is the `ADMIN_TOKEN` secret. Use `Authorization: Bearer <token>`.
+The admin bearer is the `ADMIN_TOKEN` secret. Use `Authorization: Bearer <token>`.
+
+### Scoped client keys
+
+To give an integration its own credential without sharing `ADMIN_TOKEN`, set the
+optional `CLIENT_KEYS` secret to a JSON map of client name to the hex SHA-256 of
+that client's key (see [ADR 0013](docs/adr/0013-scoped-client-keys-and-searxng-get-search.md)):
+
+```bash
+KEY=$(openssl rand -hex 32)          # give this to the client
+printf '%s' "$KEY" | sha256sum       # store only the digest
+printf '{"searxng":"<digest>"}' | npx wrangler secret put CLIENT_KEYS
+```
+
+A client key reaches `/search` (GET and POST) and `/mcp` only; anything else
+answers `403 forbidden-scope`. Each client name is limited by `CLIENT_KEY_RPM`
+(default 10) and `CLIENT_KEY_RPD` (default 300 per UTC day), on top of
+`PER_BEARER_RPM`.
+
+### Global Kagi call budget
+
+Independently of who calls, every request that actually reaches Kagi takes one
+unit from a global budget: `KAGI_CALLS_PER_SECOND` (default 2, paced),
+`KAGI_CALLS_PER_DAY` (600) and `KAGI_CALLS_PER_MONTH` (15000). A fan-out of N
+queries costs N. When a window is full the worker answers `429` with
+`Retry-After`. `0` disables a window.
+
+**SearXNG `json_engine`:**
+```yaml
+  - name: kagi
+    engine: json_engine
+    shortcut: kg
+    search_url: https://<your-host>/search?q={query}&format=json
+    headers:
+      Authorization: Bearer <client key>
+    results_query: results
+    url_query: url
+    title_query: title
+    content_query: content
+```
 
 ## MCP tools exposed
 

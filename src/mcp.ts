@@ -16,6 +16,12 @@ import { KagiError } from "./kagi/errors.js";
 import { isSupportedLanguage, SUPPORTED_LANGUAGES } from "./kagi/languages.js";
 import type { SearchResponse } from "./kagi/types.js";
 import { asStructured, mcpError, mcpResult } from "./mcp/result.js";
+import {
+  formatSearchConcise,
+  formatSearchDetailed,
+  responseFormatSchema,
+  searchOutputSchema,
+} from "./mcp/search-format.js";
 import { getResearchStub } from "./research/run.js";
 import { registerResources } from "./mcp/resources.js";
 import { registerPrompts } from "./mcp/prompts.js";
@@ -350,36 +356,42 @@ export class KagiMcpAgent extends McpAgent<Env> {
   }
 
   private registerSearchFetch(client: KagiClient): void {
-    this.server.tool(
+    // registerTool (not the deprecated server.tool overload) so the slim
+    // shape is published as outputSchema and SDK-validated. ADR 0013.
+    this.server.registerTool(
       "kagi_search_fetch",
-      SEARCH_DESCRIPTION,
       {
-        queries: z
-          .array(z.string().min(1))
-          .min(1)
-          // Bounded for the same reason as the REST path: each query becomes
-          // one concurrent upstream call, and the per-minute limit counts
-          // requests, not the calls they spawn. Matches the ceiling on
-          // kagi_personalized_rank's urls.
-          .max(20)
-          .describe(
-            "One or more concise, keyword-focused search queries (max 20 per call). Include essential context within each query for standalone use.",
-          ),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(50)
-          .optional()
-          .describe("Maximum number of search results per query (default: 10, max: 50)"),
-        impl: z
-          .enum(["scrape", "api"])
-          .optional()
-          .describe(
-            "Override which implementation handles this call. Ignored in single-impl modes.",
-          ),
+        description: SEARCH_DESCRIPTION,
+        inputSchema: {
+          queries: z
+            .array(z.string().min(1))
+            .min(1)
+            // Bounded for the same reason as the REST path: each query becomes
+            // one concurrent upstream call, and the per-minute limit counts
+            // requests, not the calls they spawn. Matches the ceiling on
+            // kagi_personalized_rank's urls.
+            .max(20)
+            .describe(
+              "One or more concise, keyword-focused search queries (max 20 per call). Include essential context within each query for standalone use.",
+            ),
+          limit: z
+            .number()
+            .int()
+            .min(1)
+            .max(50)
+            .optional()
+            .describe("Maximum number of search results per query (default: 10, max: 50)"),
+          impl: z
+            .enum(["scrape", "api"])
+            .optional()
+            .describe(
+              "Override which implementation handles this call. Ignored in single-impl modes.",
+            ),
+          response_format: responseFormatSchema,
+        },
+        outputSchema: searchOutputSchema,
       },
-      async ({ queries, limit, impl }) => {
+      async ({ queries, limit, impl, response_format }) => {
         const cap = limit ?? 10;
         const settled = await Promise.allSettled(
           queries.map((q) => client.search({ q, limit: cap, impl })),
@@ -399,20 +411,15 @@ export class KagiMcpAgent extends McpAgent<Env> {
           }
         }
 
-        let text = formatSearchResults(queries, perQuery);
-        if (errors.length > 0) {
-          text += `\n\nErrors encountered:\n${errors
-            .map((e) => `Query "${e.query}": ${e.error}`)
-            .join("\n")}`;
-        }
+        const format = response_format ?? "concise";
+        const formatted =
+          format === "detailed"
+            ? formatSearchDetailed(queries, perQuery, { mode: client.mode, errors })
+            : formatSearchConcise(queries, perQuery, { mode: client.mode, errors });
 
         return mcpResult({
-          text,
-          structured: {
-            queries: perQuery.filter((r): r is SearchResponse => r !== null),
-            errors,
-            mode: client.mode,
-          },
+          text: formatted.text,
+          structured: asStructured(formatted.structured),
         });
       },
     );
@@ -638,27 +645,3 @@ function formatEnrichText(
     .join("\n\n");
 }
 
-function formatSearchResults(
-  queries: string[],
-  responses: (SearchResponse | null)[],
-): string {
-  const chunks: string[] = [];
-  let startIndex = 1;
-  for (let i = 0; i < queries.length; i++) {
-    const resp = responses[i];
-    const results = resp?.results ?? [];
-    const lines = results.map((r, idx) => {
-      const n = startIndex + idx;
-      return `${n}: ${r.title || "No Title"}
-${r.url}
-Published Date: ${r.published_at ?? "Not Available"}
-${r.snippet || "No snippet available"}`;
-    });
-    startIndex += results.length;
-    chunks.push(`-----
-Results for search query "${queries[i]}":
------
-${lines.join("\n\n")}`);
-  }
-  return chunks.join("\n\n");
-}

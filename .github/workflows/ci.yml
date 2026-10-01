@@ -14,9 +14,8 @@ permissions:
 
 jobs:
   test:
-    # Private repo, so ubuntu-latest spends paid Actions minutes. The fleet's
-    # self-hosted/GARM runners (same label as the private Next repos) cost
-    # nothing. No job container: this pipeline is node + workerd only — no
+    # Private repo: GitHub-hosted minutes are billed, so CI runs on the org's
+    # self-hosted runners instead. No job container: node + workerd only — no
     # services, no browsers (Playwright uses its `request` fixture only, and
     # CI never downloads browser binaries).
     runs-on: [self-hosted, two-selfhosted]
