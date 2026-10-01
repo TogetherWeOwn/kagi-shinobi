@@ -8,7 +8,7 @@
 
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { checkAndIncrement, readLimit } from "../../src/util/ratelimit";
+import { checkAndIncrement, checkClientRate, readClientLimits, readLimit } from "../../src/util/ratelimit";
 
 function rlEnv(rpm: string | undefined) {
   return { ...env, PER_BEARER_RPM: rpm } as typeof env;
@@ -103,5 +103,33 @@ describe("checkAndIncrement", () => {
     // a lost update would show up as a repeated count.
     const counts = results.map((r) => r.count).sort((a, b) => a - b);
     expect(counts).toEqual(Array.from({ length: 25 }, (_, i) => i + 1));
+  });
+});
+
+describe("client-key limits (ADR 0013)", () => {
+  it("readClientLimits defaults to 10/min and 300/day, and treats garbage as disabled", () => {
+    expect(readClientLimits({ ...env, CLIENT_KEY_RPM: undefined, CLIENT_KEY_RPD: undefined } as unknown as typeof env)).toEqual({ rpm: 10, rpd: 300 });
+    expect(readClientLimits({ ...env, CLIENT_KEY_RPM: "x", CLIENT_KEY_RPD: "-3" } as typeof env)).toEqual({ rpm: 0, rpd: 0 });
+  });
+
+  it("both windows disabled admits everything", async () => {
+    const e = { ...env, CLIENT_KEY_RPM: "0", CLIENT_KEY_RPD: "0" } as typeof env;
+    for (let i = 0; i < 5; i++) expect((await checkClientRate(e, "rl-client-off")).allowed).toBe(true);
+  });
+
+  it("the minute window resets on the next minute", async () => {
+    const e = { ...env, CLIENT_KEY_RPM: "1", CLIENT_KEY_RPD: "0" } as typeof env;
+    expect((await checkClientRate(e, "rl-client-min", new Date(0))).allowed).toBe(true);
+    expect((await checkClientRate(e, "rl-client-min", new Date(1_000))).allowed).toBe(false);
+    expect((await checkClientRate(e, "rl-client-min", new Date(61_000))).allowed).toBe(true);
+  });
+
+  it("the day window reports seconds until UTC midnight", async () => {
+    const e = { ...env, CLIENT_KEY_RPM: "0", CLIENT_KEY_RPD: "1" } as typeof env;
+    const noonDay0 = new Date(43_200_000);
+    await checkClientRate(e, "rl-client-day", noonDay0);
+    const blocked = await checkClientRate(e, "rl-client-day", noonDay0);
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.retry_after_seconds).toBe(43_200);
   });
 });

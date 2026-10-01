@@ -12,7 +12,8 @@ Opus also covers:  tri-mode dispatch, the token store, and the spend/rate counte
 
 ## The invariant a test pins
 
-**Every non-`/health` path requires the `ADMIN_TOKEN` bearer.**
+**Every non-`/health` path requires a bearer: `ADMIN_TOKEN` everywhere, or a scoped `CLIENT_KEYS`
+key on `/search` and `/mcp` only (ADR 0013). `/admin/*` and `/summarize` are admin-only.**
 
 `test/workers/routing.test.ts` exists to prove exactly this, and says so in its header: it asserts
 the gate is *wired in front of* each route, which a unit test on `requireBearer` alone cannot show.
@@ -62,7 +63,7 @@ the flags live in one place; keep it that way. See the header of `src/env.ts`.
 ## Constraints
 
 - Secrets (`ADMIN_TOKEN`, `KAGI_SESSION_TOKEN`, `KAGI_EMAIL`, `KAGI_PASSWORD`, `KAGI_API_KEY`,
-  `CAPTCHA_WEBHOOK_URL`) go through `wrangler secret put` — never into `wrangler.jsonc`.
+  `CAPTCHA_WEBHOOK_URL`, `CLIENT_KEYS`) go through `wrangler secret put` — never into `wrangler.jsonc`.
 - `worker-configuration.d.ts` is generated and gitignored. Do not hand-edit it.
 - Billable API calls are capped by `MAX_API_CENTS_PER_MONTH` (default `0` = refuse everything).
   **Do not raise it to make a test pass.** ADR 0006 cites this as the one constraint this file

@@ -40,7 +40,8 @@
   },
 
   // Non-secret runtime config. Secrets (ADMIN_TOKEN, KAGI_SESSION_TOKEN,
-  // KAGI_EMAIL, KAGI_PASSWORD, KAGI_API_KEY, CAPTCHA_WEBHOOK_URL) go via
+  // KAGI_EMAIL, KAGI_PASSWORD, KAGI_API_KEY, CAPTCHA_WEBHOOK_URL,
+  // CLIENT_KEYS) go via
   // `wrangler secret put`.
   "vars": {
     "AUTO_REFRESH_ENABLED": "true",
@@ -55,6 +56,11 @@
     "MAX_API_CENTS_PER_MONTH": "0",
     // Per-bearer rate limit (requests per minute). 0 disables.
     "PER_BEARER_RPM": "60",
+    // Scoped client keys (CLIENT_KEYS secret, ADR 0013): per-key requests
+    // per minute and per UTC day. Kept human-scale on purpose — scrape mode
+    // rides one Kagi subscription. 0 disables that window.
+    "CLIENT_KEY_RPM": "10",
+    "CLIENT_KEY_RPD": "300",
     // Muriel is $1 per summary — require an explicit confirm flag on the
     // tool call unless this is set to "false".
     "SUMMARIZER_MURIEL_REQUIRES_CONFIRM": "true"

@@ -1,8 +1,9 @@
 // Worker routing, in workerd.
 //
 // This is the file that proves the public/gated split in src/index.ts is
-// what CLAUDE.md claims: "every non-/health path requires the ADMIN_TOKEN
-// bearer". Unit tests on requireBearer alone cannot prove that — they show
+// what CLAUDE.md claims: "every non-/health path requires a bearer:
+// ADMIN_TOKEN everywhere, or a scoped CLIENT_KEYS key on /search and /mcp
+// only" (ADR 0013). Unit tests on requireBearer alone cannot prove that — they show
 // the gate works, not that it is actually *wired in front of* each route.
 //
 // Runs under @cloudflare/vitest-pool-workers because src/index.ts imports
@@ -154,8 +155,10 @@ describe("the bearer gate is wired in front of every other route", () => {
 });
 
 describe("method routing", () => {
-  it("GET /search is 404 — the route is POST-only", async () => {
-    const res = await call("/search", { method: "GET", headers: auth });
+  // ADR 0013 deliberately added GET /search (the SearXNG json_engine view);
+  // until then this asserted 404. Other verbs are still unrouted.
+  it("PUT /search is 404 — only GET and POST are routed", async () => {
+    const res = await call("/search", { method: "PUT", headers: auth });
     expect(res.status).toBe(404);
   });
 
@@ -227,5 +230,98 @@ describe("rate limiting", () => {
     const other = await callAs("rl-tenant-b", "/search", { PER_BEARER_RPM: "1" });
 
     expect(other.status).not.toBe(429);
+  });
+});
+
+// ADR 0013: scoped client keys. A client key is a second kind of bearer that
+// reaches /search and /mcp only; /summarize and /admin/* stay admin-only, and
+// the admin token's behaviour is unchanged.
+describe("scoped client keys", () => {
+  const CLIENT_KEY = "client-key-under-test";
+  // sha256("client-key-under-test"), computed in-test so the fixture cannot drift.
+  async function clientKeys(name: string): Promise<string> {
+    const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(CLIENT_KEY));
+    const hex = Array.from(new Uint8Array(d))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    return JSON.stringify({ [name]: hex });
+  }
+  const asClient = { Authorization: `Bearer ${CLIENT_KEY}` };
+
+  it("GET /search is gated: 401 without a bearer", async () => {
+    const res = await call("/search?q=x");
+    expect(res.status).toBe(401);
+  });
+
+  it("GET /search reaches its handler with the admin token", async () => {
+    const res = await call("/search", { headers: auth });
+    expect(res.status).toBe(400); // missing-query, from the handler
+  });
+
+  it("GET /search reaches its handler with a client key", async () => {
+    const res = await call("/search", { headers: asClient }, { CLIENT_KEYS: await clientKeys("ck-search") });
+    const body = (await res.json()) as { error: { code: string } };
+    expect(res.status).toBe(400);
+    expect(body.error.code).toBe("missing-query");
+  });
+
+  it("POST /search and /mcp accept a client key", async () => {
+    const keys = await clientKeys("ck-post");
+    const post = await call(
+      "/search",
+      { method: "POST", headers: { ...asClient, "Content-Type": "application/json" }, body: "{}" },
+      { CLIENT_KEYS: keys },
+    );
+    expect(post.status).toBe(400);
+    const mcp = await call("/mcp", { method: "GET", headers: asClient }, { CLIENT_KEYS: keys });
+    expect([401, 403, 404]).not.toContain(mcp.status);
+  });
+
+  it.each([
+    ["POST", "/summarize"],
+    ["POST", "/admin/token"],
+    ["POST", "/admin/refresh"],
+    ["GET", "/definitely-not-a-route"],
+  ])("%s %s is 403 forbidden-scope for a client key", async (method, path) => {
+    const res = await call(path, { method, headers: asClient }, { CLIENT_KEYS: await clientKeys("ck-scope") });
+    const body = (await res.json()) as { error: { code: string } };
+    expect(res.status).toBe(403);
+    expect(body.error.code).toBe("forbidden-scope");
+  });
+
+  it("a client key does not unlock /health detail", async () => {
+    const res = await call("/health", { headers: asClient }, { CLIENT_KEYS: await clientKeys("ck-health") });
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
+  it("a client key is 401 when CLIENT_KEYS is not configured", async () => {
+    const res = await call("/search?q=x", { headers: asClient });
+    expect(res.status).toBe(401);
+  });
+
+  it("enforces CLIENT_KEY_RPM per client name", async () => {
+    const o = { CLIENT_KEYS: await clientKeys("ck-rpm"), CLIENT_KEY_RPM: "2", CLIENT_KEY_RPD: "0" };
+    await call("/search", { headers: asClient }, o);
+    await call("/search", { headers: asClient }, o);
+    const res = await call("/search", { headers: asClient }, o);
+    expect(res.status).toBe(429);
+    expect(res.headers.get("X-RateLimit-Limit")).toBe("2");
+  });
+
+  it("enforces CLIENT_KEY_RPD with a Retry-After to UTC midnight", async () => {
+    const o = { CLIENT_KEYS: await clientKeys("ck-rpd"), CLIENT_KEY_RPM: "0", CLIENT_KEY_RPD: "1" };
+    await call("/search", { headers: asClient }, o);
+    const res = await call("/search", { headers: asClient }, o);
+    expect(res.status).toBe(429);
+    const retry = Number(res.headers.get("Retry-After"));
+    expect(retry).toBeGreaterThanOrEqual(1);
+    expect(retry).toBeLessThanOrEqual(86_400);
+  });
+
+  it("client limits do not apply to the admin token", async () => {
+    const o = { CLIENT_KEYS: await clientKeys("ck-admin"), CLIENT_KEY_RPM: "1", CLIENT_KEY_RPD: "1" };
+    await call("/search", { headers: auth }, o);
+    const res = await call("/search", { headers: auth }, o);
+    expect(res.status).toBe(400);
   });
 });
