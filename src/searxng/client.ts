@@ -76,9 +76,10 @@ export class SearxngClient {
     const limit = args.limit ?? 10;
 
     const base = (this.env.SEARXNG_BASE_URL as string).replace(/\/+$/, "");
-    const url =
-      `${base}/search?` +
-      `q=${encodeURIComponent(args.q)}&format=json&limit=${encodeURIComponent(String(limit))}`;
+    // SearXNG `format=json` has no `limit` param (paging is via `pageno`),
+    // so the requested limit is enforced client-side in `normalize` below —
+    // sending an inert param would imply the instance honors it.
+    const url = `${base}/search?q=${encodeURIComponent(args.q)}&format=json`;
 
     const headers: Record<string, string> = {
       Accept: "application/json",
@@ -117,28 +118,34 @@ export class SearxngClient {
       clearTimeout(timer);
     }
 
-    return normalize(args.q, wire, start_ms);
+    return normalize(args.q, wire, start_ms, limit);
   }
 }
 
 /** SearXNG `format=json` into the canonical `SearchResponse`. Exported so
- *  tests can pin the mapping without a network round-trip. */
+ *  tests can pin the mapping without a network round-trip. `limit` caps the
+ *  returned results — SearXNG's `format=json` ignores any limit param, so the
+ *  cap is enforced here, not on the wire. Omitted = no cap. */
 export function normalizeSearxngResponse(
   query: string,
   wire: SearxngJsonResponse,
   start_ms: number,
+  limit?: number,
 ): SearchResponse {
-  return normalize(query, wire, start_ms);
+  return normalize(query, wire, start_ms, limit);
 }
 
-function normalize(query: string, wire: SearxngJsonResponse, start_ms: number): SearchResponse {
+function normalize(
+  query: string,
+  wire: SearxngJsonResponse,
+  start_ms: number,
+  limit?: number,
+): SearchResponse {
   const results: SearchResult[] = [];
-  // The `limit` query param already bounds what SearXNG returns; iterate
-  // the whole array rather than re-capping here, so a future caller that
-  // passes no limit gets everything the instance chose to send.
   const raw = Array.isArray(wire.results) ? wire.results : [];
   let rank = 1;
   for (const item of raw) {
+    if (limit !== undefined && results.length >= limit) break;
     const r = toResult(item as SearxngJsonResult, rank);
     if (r) {
       results.push(r);

@@ -28,7 +28,9 @@ from the rbx1 instance — the two must stay in step.
 - `engine=searxng` goes to the new `SearxngClient`, which fetches SearXNG
   `format=json` and normalizes into the canonical `SearchResponse` with
   `source_impl: "searxng"`. Same schema, whichever engine served the query —
-  `ImplKind` gains `"searxng"` for exactly this.
+  `ImplKind` gains `"searxng"` for exactly this. The caller's `limit` is
+  enforced client-side in `normalize`: SearXNG `format=json` has no `limit`
+  param (paging is via `pageno`), so no inert param goes on the wire.
 - `engine=auto` tries Kagi first and serves SearXNG on any `KagiError`
   (budget, auth, captcha, upstream, timeout), annotating `meta.warnings` with
   the Kagi failure kind. "Under budget and session healthy" is decided by the
@@ -39,8 +41,10 @@ from the rbx1 instance — the two must stay in step.
 - When SearXNG is unconfigured, or fails too, the caller gets the *original*
   Kagi error — the root cause, not the fallback's shadow.
 - `impl` only applies under `engine=kagi`; pairing it with another engine is
-  a 400 at REST, an `Error` in the facade (surfaced as `internal` on MCP, the
-  same envelope as any other facade misuse). Search-only: summarize, extract,
+  a 400 at REST, an `Error` in the facade. On MCP that `Error` lands in the
+  per-query `Errors encountered` text block via `describeError`, not the
+  `internal` envelope (the search handler has no try/catch — `kagiErrorMcp`
+  only wraps the other tools). Search-only: summarize, extract,
   enrich, rank and small_web are untouched.
 
 **Transport: operator-configured, never the Caddy path.** rbx1 is reached via

@@ -80,7 +80,7 @@ describe("SearxngClient.search — transport", () => {
     await expect(client.search({ q: "x" })).rejects.toBeInstanceOf(KagiNotConfiguredError);
   });
 
-  it("requests format=json with q and limit, and normalizes the envelope", async () => {
+  it("requests format=json with q, and normalizes the envelope", async () => {
     let seenUrl = "";
     let seenHeaders: Record<string, string> = {};
     stubFetch(async (input, init) => {
@@ -91,13 +91,36 @@ describe("SearxngClient.search — transport", () => {
 
     const res = await new SearxngClient(env()).search({ q: "rust", limit: 5 });
 
-    expect(seenUrl).toBe("https://searxng.internal.example/search?q=rust&format=json&limit=5");
+    // SearXNG format=json has no limit param (paging is via pageno) — the
+    // limit is enforced client-side in normalize, so no inert param goes on
+    // the wire.
+    expect(seenUrl).toBe("https://searxng.internal.example/search?q=rust&format=json");
     expect(seenHeaders.Accept).toBe("application/json");
     // No Access headers without the secrets — a VPC-adjacent binding needs none.
     expect(seenHeaders["CF-Access-Client-Id"]).toBeUndefined();
     expect(res.query).toBe("rust");
     expect(res.results).toHaveLength(2);
     expect(res.meta.impl).toBe("searxng");
+  });
+
+  it("caps results at the requested limit, keeping ranks continuous", async () => {
+    stubFetch(
+      jsonFetch({
+        results: [
+          { url: "https://a.example", title: "A" },
+          { title: "no url" },
+          { url: "https://b.example", title: "B" },
+          { url: "https://c.example", title: "C" },
+        ],
+      }),
+    );
+
+    const res = await new SearxngClient(env()).search({ q: "x", limit: 2 });
+
+    // Url-less entries are skipped without consuming the limit.
+    expect(res.results).toHaveLength(2);
+    expect(res.results.map((r) => r.rank)).toEqual([1, 2]);
+    expect(res.results[1].url).toBe("https://b.example");
   });
 
   it("strips trailing slashes from the base URL", async () => {
@@ -158,16 +181,14 @@ describe("SearxngClient.search — transport", () => {
     await expect(new SearxngClient(env()).search({ q: "x" })).rejects.toBeInstanceOf(TypeError);
   });
 
-  it("defaults the limit to 10", async () => {
-    let seenUrl = "";
-    stubFetch(async (input) => {
-      seenUrl = String(input);
-      return jsonFetch({ ...WIRE, results: [] })();
-    });
+  it("defaults the limit to 10 results", async () => {
+    stubFetch(
+      jsonFetch({ results: Array.from({ length: 12 }, (_, i) => ({ url: `https://x${i}.example` })) }),
+    );
 
-    await new SearxngClient(env()).search({ q: "x" });
+    const res = await new SearxngClient(env()).search({ q: "x" });
 
-    expect(seenUrl).toContain("limit=10");
+    expect(res.results).toHaveLength(10);
   });
 });
 
@@ -218,6 +239,29 @@ describe("normalizeSearxngResponse — canonical mapping", () => {
   it("tolerates a missing or non-array results field", () => {
     expect(normalizeSearxngResponse("x", {}, Date.now()).results).toEqual([]);
     expect(normalizeSearxngResponse("x", { results: null }, Date.now()).results).toEqual([]);
+  });
+
+  it("caps results at the passed limit, keeping ranks continuous", () => {
+    const wire = {
+      results: [
+        { url: "https://a.example", title: "A" },
+        { title: "no url" },
+        { url: "https://b.example", title: "B" },
+        { url: "https://c.example", title: "C" },
+      ],
+    };
+
+    const res = normalizeSearxngResponse("x", wire, Date.now(), 2);
+
+    expect(res.results).toHaveLength(2);
+    expect(res.results.map((r) => r.rank)).toEqual([1, 2]);
+    expect(res.results[1].url).toBe("https://b.example");
+  });
+
+  it("returns everything when no limit is passed", () => {
+    const res = normalizeSearxngResponse("rust", WIRE, Date.now());
+
+    expect(res.results).toHaveLength(2);
   });
 
   it("always annotates meta.warnings with the fallback notice", () => {
