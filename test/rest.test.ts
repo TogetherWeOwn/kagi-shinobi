@@ -169,6 +169,41 @@ describe("handleSearch input validation", () => {
 
     expect(client.search).toHaveBeenCalledWith(expect.objectContaining({ impl: undefined }));
   });
+
+  it("rejects an engine outside kagi|searxng|auto", async () => {
+    const res = await handleSearch(post({ queries: ["q"], engine: "bing" }), makeEnv());
+
+    expect(res.status).toBe(400);
+    expect((await json(res)).error).toMatchObject({ code: "invalid-engine" });
+  });
+
+  it.each(["kagi", "searxng", "auto"])("passes engine=%s through", async (engine) => {
+    const client = fakeClient();
+    createKagiClient.mockReturnValue(client);
+
+    await handleSearch(post({ queries: ["q"], engine }), makeEnv());
+
+    expect(client.search).toHaveBeenCalledWith(expect.objectContaining({ engine }));
+  });
+
+  it("leaves engine undefined when omitted, so the client defaults to kagi", async () => {
+    const client = fakeClient();
+    createKagiClient.mockReturnValue(client);
+
+    await handleSearch(post({ queries: ["q"] }), makeEnv());
+
+    expect(client.search).toHaveBeenCalledWith(expect.objectContaining({ engine: undefined }));
+  });
+
+  it("rejects impl paired with a non-kagi engine", async () => {
+    const res = await handleSearch(
+      post({ queries: ["q"], impl: "scrape", engine: "auto" }),
+      makeEnv(),
+    );
+
+    expect(res.status).toBe(400);
+    expect((await json(res)).error).toMatchObject({ code: "invalid-impl" });
+  });
 });
 
 // One request fans out to one upstream call per query. The per-minute rate
