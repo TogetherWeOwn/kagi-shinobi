@@ -20,3 +20,4 @@ than quietly rewritten.
 | [0011](0011-an-e2e-layer-that-only-tests-what-in-process-tests-cannot.md) | An E2E layer that only tests what in-process tests cannot | accepted | 2026-08-07 |
 | [0012](0012-one-error-vocabulary-two-envelopes.md) | One error vocabulary, two envelopes | accepted | 2026-08-07 |
 | [0013](0013-scoped-client-keys-and-searxng-get-search.md) | Scoped client keys, a global Kagi call budget, and a SearXNG-shaped GET /search | accepted | 2026-10-01 |
+| [0014](0014-searxng-fallback-engine.md) | SearXNG fallback engine behind `engine=auto` | accepted | 2026-10-01 |

@@ -308,8 +308,17 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "engine": {
+          "description": "Which engine serves the query: 'kagi' (default, tri-mode dispatcher), 'searxng' (free SearXNG fallback, noisier), or 'auto' (Kagi while under budget and the session is healthy, otherwise SearXNG).",
+          "enum": [
+            "kagi",
+            "searxng",
+            "auto",
+          ],
+          "type": "string",
+        },
         "impl": {
-          "description": "Override which implementation handles this call. Ignored in single-impl modes.",
+          "description": "Override which implementation handles this call. Ignored in single-impl modes. Only applies under engine='kagi'.",
           "enum": [
             "scrape",
             "api",
@@ -939,8 +948,17 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "engine": {
+          "description": "Which engine serves the query: 'kagi' (default, tri-mode dispatcher), 'searxng' (free SearXNG fallback, noisier), or 'auto' (Kagi while under budget and the session is healthy, otherwise SearXNG).",
+          "enum": [
+            "kagi",
+            "searxng",
+            "auto",
+          ],
+          "type": "string",
+        },
         "impl": {
-          "description": "Override which implementation handles this call. Ignored in single-impl modes.",
+          "description": "Override which implementation handles this call. Ignored in single-impl modes. Only applies under engine='kagi'.",
           "enum": [
             "scrape",
             "api",
