@@ -54,7 +54,7 @@ queries costs N. When a window is full the worker answers `429` with
   - name: kagi
     engine: json_engine
     shortcut: kg
-    search_url: https://kagi-shinobi.<subdomain>.workers.dev/search?q={query}&format=json
+    search_url: https://<your-host>/search?q={query}&format=json
     headers:
       Authorization: Bearer <client key>
     results_query: results

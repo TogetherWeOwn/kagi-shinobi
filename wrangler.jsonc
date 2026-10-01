@@ -5,6 +5,11 @@
   "compatibility_date": "2026-07-01",
   "compatibility_flags": ["nodejs_compat"],
 
+  // Custom domain attached 2026-10-01 (Workers Domains). Declared here so a
+  // deploy keeps it. workers_dev stays on: existing MCP clients use it.
+  "routes": [{ "pattern": "shinobi.infextion.net", "custom_domain": true }],
+  "workers_dev": true,
+
   "observability": {
     "enabled": true
   },
