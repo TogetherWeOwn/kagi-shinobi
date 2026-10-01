@@ -1,4 +1,4 @@
-# ADR 0013 — Scoped client keys and a SearXNG-shaped GET /search
+# ADR 0013 — Scoped client keys, a global Kagi call budget, and a SearXNG-shaped GET /search
 
 **Status:** Accepted — 2026-10-01
 
@@ -28,6 +28,19 @@ at human-scale volume.
   (ADR 0006), in two windows: `CLIENT_KEY_RPM` (default 10) and
   `CLIENT_KEY_RPD` (default 300 per UTC day). `PER_BEARER_RPM` still applies on
   top. The day window reuses `Meter.checkRate` with the day index as bucket.
+- **Global upstream call budget.** Request-level limits do not bound what
+  reaches Kagi: POST /search fans out to 20 queries, `kagi_personalized_rank`
+  probes up to 20 URLs, and MCP protocol traffic counts against
+  `PER_BEARER_RPM` without reaching Kagi at all. `takeKagiCall()` runs
+  immediately before *every* upstream Kagi fetch (scrape search, summarize,
+  FastGPT, Small Web, each rank probe, each 401 retry, and the API client),
+  for every caller including admin. One global Meter instance
+  (`idFromName("kagi-calls")`) holds three windows: `KAGI_CALLS_PER_SECOND`
+  (default 2, paced: waits out the second up to 3 s, then refuses),
+  `KAGI_CALLS_PER_DAY` (600) and `KAGI_CALLS_PER_MONTH` (15000), both refusing
+  with `429 rate_limit` and a Retry-After to the window's end. All three are
+  checked before any is incremented, so a refusal consumes nothing. Fails
+  closed if the Meter is unreachable (as ADR 0006).
 - `GET /search?q=&format=json[&limit=]` runs one query through the same
   `client.search` as POST and returns
   `{query, number_of_results, results:[{url,title,content,engine,...}], answers, suggestions}`.
@@ -35,6 +48,9 @@ at human-scale volume.
 
 ## Consequences
 
+- The budget is shared: a busy integration can exhaust the day for the owner's
+  own MCP use. Per-client RPD (300) is set below the global day (600) so one
+  client cannot take it all.
 - Revoking one integration is a `CLIENT_KEYS` edit; the admin token and Kagi
   session are untouched.
 - The query string of GET /search can appear in access logs. Keys must go in

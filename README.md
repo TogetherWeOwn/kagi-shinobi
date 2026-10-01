@@ -41,6 +41,14 @@ answers `403 forbidden-scope`. Each client name is limited by `CLIENT_KEY_RPM`
 (default 10) and `CLIENT_KEY_RPD` (default 300 per UTC day), on top of
 `PER_BEARER_RPM`.
 
+### Global Kagi call budget
+
+Independently of who calls, every request that actually reaches Kagi takes one
+unit from a global budget: `KAGI_CALLS_PER_SECOND` (default 2, paced),
+`KAGI_CALLS_PER_DAY` (600) and `KAGI_CALLS_PER_MONTH` (15000). A fan-out of N
+queries costs N. When a window is full the worker answers `429` with
+`Retry-After`. `0` disables a window.
+
 **SearXNG `json_engine`:**
 ```yaml
   - name: kagi

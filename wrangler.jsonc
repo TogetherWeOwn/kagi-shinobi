@@ -61,6 +61,12 @@
     // rides one Kagi subscription. 0 disables that window.
     "CLIENT_KEY_RPM": "10",
     "CLIENT_KEY_RPD": "300",
+    // Global budget on upstream Kagi calls, all callers combined (ADR 0013).
+    // Counted per call that reaches Kagi, not per worker request. 0 disables
+    // that window.
+    "KAGI_CALLS_PER_SECOND": "2",
+    "KAGI_CALLS_PER_DAY": "600",
+    "KAGI_CALLS_PER_MONTH": "15000",
     // Muriel is $1 per summary — require an explicit confirm flag on the
     // tool call unless this is set to "false".
     "SUMMARIZER_MURIEL_REQUIRES_CONFIRM": "true"

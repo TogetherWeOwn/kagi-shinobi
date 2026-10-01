@@ -8,6 +8,7 @@
 
 import type { Env } from "../../env.js";
 import { KagiError, KagiNotConfiguredError, KagiUpstreamError } from "../errors.js";
+import { takeKagiCall } from "../budget.js";
 
 export interface KagiApiRequest {
   method: "GET" | "POST";
@@ -53,6 +54,7 @@ export class KagiApiClient {
 
   async request<T>(req: KagiApiRequest): Promise<KagiApiResponse<T>> {
     this.requireConfigured();
+    await takeKagiCall(this.env);
     const controller = new AbortController();
     const timeout_ms = req.timeout_ms ?? 30_000;
     const timer = setTimeout(() => controller.abort(), timeout_ms);

@@ -20,6 +20,8 @@ export interface ScrapeRankArgs {
 export async function scrapeRank(
   args: ScrapeRankArgs,
   sessionToken: string | undefined,
+  /** Called before each upstream probe — the global call budget (ADR 0013). */
+  beforeCall: () => Promise<void> = async () => {},
 ): Promise<RankResponse> {
   if (!sessionToken) throw new KagiAuthError("Personalized rank requires a session token");
   const start_ms = Date.now();
@@ -29,6 +31,9 @@ export async function scrapeRank(
     const domain = domainFromUrl(url);
     const q = args.q ? `${args.q} site:${domain}` : `site:${domain}`;
     let position = -1;
+    // Outside the try: a budget refusal must abort the whole rank, not be
+    // scored as "URL not found".
+    await beforeCall();
     try {
       const resp = await rawSearch(q, sessionToken, probeLimit);
       const items = resp.data.filter((it) => it.t === 0);
