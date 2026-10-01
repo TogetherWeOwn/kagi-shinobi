@@ -99,6 +99,17 @@ async function buildAgent(mode = "scrape", clientOverrides: Record<string, unkno
       tools.set(name, handler);
       schemas.set(name, schema);
     },
+    // kagi_search_fetch registers via server.registerTool() so its slim shape
+    // is published as outputSchema (ADR 0013). The fake captures the handler
+    // and the input schema the same way.
+    registerTool: (
+      name: string,
+      config: { inputSchema: Record<string, ZodTypeAny> },
+      handler: Handler,
+    ) => {
+      tools.set(name, handler);
+      schemas.set(name, config.inputSchema);
+    },
     resource: () => {},
     prompt: () => {},
   };
@@ -182,20 +193,90 @@ describe("tool registration is gated by mode", () => {
 });
 
 describe("kagi_search_fetch", () => {
-  it("numbers results continuously across queries", async () => {
+  it("numbers results continuously across queries in detailed mode", async () => {
     const search = vi
       .fn()
       .mockResolvedValueOnce(searchResponse("first", ["One", "Two"]))
       .mockResolvedValueOnce(searchResponse("second", ["Three"]));
 
-    const result = await call("kagi_search_fetch", { queries: ["first", "second"] }, "scrape", {
-      search,
-    });
+    const result = await call(
+      "kagi_search_fetch",
+      { queries: ["first", "second"], response_format: "detailed" },
+      "scrape",
+      { search },
+    );
 
     expect(text(result)).toContain("1: One");
     expect(text(result)).toContain("2: Two");
     // Continues from the previous query rather than restarting at 1.
     expect(text(result)).toContain("3: Three");
+  });
+
+  // Concise is the default (ADR 0013): citation ids, no date filler line.
+  it("defaults to concise citation ids without the published-date filler", async () => {
+    const search = vi.fn().mockResolvedValueOnce(searchResponse("q", ["One", "Two"]));
+
+    const result = await call("kagi_search_fetch", { queries: ["q"] }, "scrape", { search });
+
+    expect(text(result)).toContain("[S1]");
+    expect(text(result)).toContain("[S2]");
+    expect(text(result)).not.toContain("Published Date");
+    expect(result.structuredContent?.response_format).toBe("concise");
+    expect(result.structuredContent?.dedup_dropped).toBe(0);
+  });
+
+  it("emits stable refs in the slim structured channel", async () => {
+    const result = await call("kagi_search_fetch", { queries: ["q"] }, "scrape");
+
+    const queries = result.structuredContent?.queries as Array<{
+      results: Array<{ id: string; ref: string; url: string; rank: number }>;
+    }>;
+    expect(queries).toHaveLength(1);
+    expect(queries[0].results[0]).toMatchObject({ id: "S1", rank: 1 });
+    expect(queries[0].results[0].ref).toMatch(/^[0-9a-f]{10}$/);
+    // Slim: no snippets ride along.
+    expect(JSON.stringify(result.structuredContent)).not.toContain("snippet for");
+  });
+
+  it("dedupes a repeated url across queries and reports the drop", async () => {
+    const dup = "https://example.test/same";
+    const search = vi
+      .fn()
+      .mockResolvedValueOnce({
+        query: "first",
+        mode: "scrape",
+        results: [
+          {
+            rank: 1,
+            url: dup,
+            title: "First seen",
+            snippet: "s",
+            source_domain: "example.test",
+            source_impl: "scrape" as const,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        query: "second",
+        mode: "scrape",
+        results: [
+          {
+            rank: 1,
+            url: `${dup}?utm_source=x`,
+            title: "Second seen",
+            snippet: "s",
+            source_domain: "example.test",
+            source_impl: "scrape" as const,
+          },
+        ],
+      });
+
+    const result = await call("kagi_search_fetch", { queries: ["first", "second"] }, "scrape", {
+      search,
+    });
+
+    expect(result.structuredContent?.dedup_dropped).toBe(1);
+    expect(text(result)).not.toContain("[S2]");
   });
 
   it("defaults the per-query limit to 10", async () => {
@@ -226,7 +307,8 @@ describe("kagi_search_fetch", () => {
       search,
     });
 
-    expect(text(result)).toContain("1: Fine");
+    expect(text(result)).toContain("[S1]");
+    expect(text(result)).toContain("Fine");
     expect(text(result)).toContain("Errors encountered:");
     expect(text(result)).toContain('Query "bad": token expired');
     expect(result.structuredContent?.errors).toHaveLength(1);
@@ -240,18 +322,45 @@ describe("kagi_search_fetch", () => {
     expect(result.structuredContent?.mode).toBe("hybrid");
   });
 
-  it("renders placeholders for a result missing a title, date, or snippet", async () => {
+  it("renders placeholders for a result missing a title or snippet in detailed mode", async () => {
     const search = vi.fn().mockResolvedValue({
       query: "q",
       mode: "scrape",
       results: [{ rank: 1, url: "https://example.test/x", title: "", snippet: "" }],
     });
 
-    const result = await call("kagi_search_fetch", { queries: ["q"] }, "scrape", { search });
+    const result = await call(
+      "kagi_search_fetch",
+      { queries: ["q"], response_format: "detailed" },
+      "scrape",
+      { search },
+    );
 
     expect(text(result)).toContain("No Title");
     expect(text(result)).toContain("Published Date: Not Available");
     expect(text(result)).toContain("No snippet available");
+  });
+
+  it("omits filler for a result missing a date or snippet in concise mode", async () => {
+    const search = vi.fn().mockResolvedValue({
+      query: "q",
+      mode: "scrape",
+      results: [
+        {
+          rank: 1,
+          url: "https://example.test/x",
+          title: "",
+          snippet: "",
+          source_domain: "example.test",
+          source_impl: "scrape" as const,
+        },
+      ],
+    });
+
+    const result = await call("kagi_search_fetch", { queries: ["q"] }, "scrape", { search });
+
+    expect(text(result)).toContain("[S1] No Title — example.test");
+    expect(text(result)).not.toContain("Not Available");
   });
 
   it("stringifies a non-Error rejection", async () => {
@@ -602,6 +711,16 @@ describe("fan-out ceilings are declared in the tool schemas", () => {
     const schema = await schemaFor("kagi_search_fetch");
 
     expect(schema.queries.safeParse([]).success).toBe(false);
+  });
+
+  // ADR 0013: response_format is optional and closed to the two known values.
+  it("kagi_search_fetch accepts concise/detailed response_format and refuses anything else", async () => {
+    const schema = await schemaFor("kagi_search_fetch");
+
+    expect(schema.response_format.safeParse(undefined).success).toBe(true);
+    expect(schema.response_format.safeParse("concise").success).toBe(true);
+    expect(schema.response_format.safeParse("detailed").success).toBe(true);
+    expect(schema.response_format.safeParse("verbose").success).toBe(false);
   });
 
   it("kagi_personalized_rank keeps its own 20-url ceiling", async () => {

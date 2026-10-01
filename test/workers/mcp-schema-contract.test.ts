@@ -31,6 +31,7 @@ const { KagiMcpAgent } = await import("../../src/mcp");
 interface ToolDescriptor {
   name: string;
   inputSchema: unknown;
+  outputSchema?: unknown;
 }
 
 /**
@@ -66,7 +67,14 @@ async function listTools(mode: string): Promise<ToolDescriptor[]> {
   const client = await connectAgent(mode);
   const { tools } = await client.listTools();
   return tools
-    .map((tool) => ({ name: tool.name, inputSchema: tool.inputSchema }))
+    .map((tool) => ({
+      name: tool.name,
+      inputSchema: tool.inputSchema,
+      // Only kagi_search_fetch publishes one (ADR 0013) — capturing it when
+      // present keeps the published output contract under snapshot, while
+      // tools without one keep their existing recorded shape untouched.
+      ...(tool.outputSchema ? { outputSchema: tool.outputSchema } : {}),
+    }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -150,6 +158,36 @@ describe("schema conversion preserves", () => {
     const budget = propertyOf(await schemaFor("kagi_research_create_run"), "budget_cents");
 
     expect(budget.description).toBe("Max API cents this run may spend. Default 0 (scrape-only).");
+  });
+
+  // ADR 0013: kagi_search_fetch publishes its slim structured shape so
+  // clients can type the response. Only this tool publishes one — every other
+  // tool must keep outputSchema absent.
+  it("publishes the slim output schema on kagi_search_fetch and no other tool", async () => {
+    const client = await connectAgent("api");
+    const { tools } = await client.listTools();
+
+    const search = tools.find((t) => t.name === "kagi_search_fetch");
+    const output = search?.outputSchema as Record<string, unknown>;
+    const properties = output.properties as Record<string, unknown>;
+    expect(Object.keys(properties).sort()).toEqual([
+      "dedup_dropped",
+      "errors",
+      "mode",
+      "queries",
+      "response_format",
+    ]);
+
+    for (const tool of tools) {
+      if (tool.name === "kagi_search_fetch") continue;
+      expect(tool.outputSchema, `${tool.name} should not publish an outputSchema`).toBeUndefined();
+    }
+  });
+
+  it("advertises response_format on kagi_search_fetch", async () => {
+    const format = propertyOf(await schemaFor("kagi_search_fetch"), "response_format");
+
+    expect(format).toMatchObject({ type: "string", enum: ["concise", "detailed"] });
   });
 
   it("the required/optional split", async () => {
