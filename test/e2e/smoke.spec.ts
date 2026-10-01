@@ -27,6 +27,7 @@ interface HealthBody {
   ok: boolean;
   autoRefresh: boolean;
   token: string;
+  buildSha: string;
 }
 
 test.describe("the worker boots from wrangler.jsonc and answers on a socket", () => {
@@ -80,6 +81,9 @@ test.describe("the worker boots from wrangler.jsonc and answers on a socket", ()
     // Shape, not state: whether a token is present depends on what the
     // persisted store holds, which is not this file's business.
     expect(["ok", "stale", "missing"]).toContain(body.token);
+    // `wrangler dev` serves wrangler.jsonc's vars verbatim, so this is the
+    // committed default — a deploy through deploy.yml injects the tag SHA.
+    expect(body.buildSha).toBe("dev");
   });
 });
 

@@ -1,0 +1,27 @@
+name: Release Please
+
+# Versioning. Conventional commits on main become a "Release PR" that bumps
+# package.json and CHANGELOG.md; merging it publishes a GitHub release, which
+# is what .github/workflows/deploy.yml deploys from. Nothing here deploys.
+#
+# First run: no tags exist yet, so the first Release PR establishes v1.0.0
+# (release-please's default initial version) and the CURRENT package.json
+# version (0.2.0-dev) is replaced by it. After that the tool owns the number.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    # Same cost rule as CI: this repo is private, so no ubuntu-latest.
+    runs-on: [self-hosted, two-selfhosted]
+    timeout-minutes: 10
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          release-type: node

@@ -57,6 +57,11 @@
     "PER_BEARER_RPM": "60",
     // Muriel is $1 per summary — require an explicit confirm flag on the
     // tool call unless this is set to "false".
-    "SUMMARIZER_MURIEL_REQUIRES_CONFIRM": "true"
+    "SUMMARIZER_MURIEL_REQUIRES_CONFIRM": "true",
+    // Build SHA injected at deploy time (`wrangler deploy --var
+    // BUILD_SHA:<sha>`, see .github/workflows/deploy.yml) and echoed by
+    // authenticated /health so a deployment can be matched to its commit.
+    // Default "dev" — anything not deployed through that path.
+    "BUILD_SHA": "dev"
   }
 }
