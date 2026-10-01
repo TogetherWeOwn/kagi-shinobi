@@ -33,6 +33,8 @@ declare global {
       // KagiNotConfiguredError before hitting the network.
       KAGI_API_KEY?: string;
       CAPTCHA_WEBHOOK_URL?: string;
+      // Scoped client keys, JSON {name: sha256hex(key)}. See ADR 0013.
+      CLIENT_KEYS?: string;
     }
   }
 }

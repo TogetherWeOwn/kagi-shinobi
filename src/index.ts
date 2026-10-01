@@ -1,14 +1,15 @@
 // Worker entry: routes requests to REST, MCP, or admin handlers.
-// Every non-/health path requires the ADMIN_TOKEN bearer.
+// Every non-/health path requires a bearer: the ADMIN_TOKEN everywhere, or a
+// scoped CLIENT_KEYS key on the search surfaces only (ADR 0013).
 
 import type { Env } from "./env.js";
-import { requireBearer } from "./util/auth.js";
+import { authenticate, isClientScopedPath } from "./util/auth.js";
 import { jsonError } from "./util/errors.js";
-import { handleSearch, handleSummarize } from "./rest.js";
+import { handleSearch, handleSearchGet, handleSummarize } from "./rest.js";
 import { handleAdminRefresh, handleAdminToken, handleHealth } from "./token/admin.js";
 import { KagiMcpAgent } from "./mcp.js";
 import { landingResponse } from "./landing.js";
-import { checkAndIncrement } from "./util/ratelimit.js";
+import { checkAndIncrement, checkClientRate } from "./util/ratelimit.js";
 import { ResearchRun } from "./research/run.js";
 import { Meter } from "./meter/meter.js";
 
@@ -29,11 +30,28 @@ export default {
       return handleHealth(request, env);
     }
 
-    const authFailure = requireBearer(request, env);
-    if (authFailure) return authFailure;
+    const principal = await authenticate(request, env);
+    if (principal instanceof Response) return principal;
+
+    if (principal.kind === "client") {
+      if (!isClientScopedPath(path)) {
+        return jsonError(403, "forbidden-scope", `client key "${principal.name}" may not call ${path}`);
+      }
+      const rl = await checkClientRate(env, principal.name);
+      if (!rl.allowed) {
+        return jsonError(429, "rate-limited", `client key limit reached (${rl.count}/${rl.limit_rpm})`, {
+          headers: {
+            "Retry-After": String(rl.retry_after_seconds ?? 60),
+            "X-RateLimit-Limit": String(rl.limit_rpm),
+            "X-RateLimit-Remaining": "0",
+          },
+        });
+      }
+    }
 
     // Per-bearer rate limit (PER_BEARER_RPM). Admin endpoints skip the limit
     // so operators can reset a runaway automation without eating quota.
+    // Client keys also pass through this, so PER_BEARER_RPM stays a ceiling.
     if (!path.startsWith("/admin/")) {
       const bearer = request.headers.get("Authorization")!.slice("Bearer ".length).trim();
       const rl = await checkAndIncrement(env, bearer);
@@ -58,6 +76,9 @@ export default {
 
     if (path === "/search" && method === "POST") {
       return handleSearch(request, env);
+    }
+    if (path === "/search" && method === "GET") {
+      return handleSearchGet(request, env);
     }
     if (path === "/summarize" && method === "POST") {
       return handleSummarize(request, env);

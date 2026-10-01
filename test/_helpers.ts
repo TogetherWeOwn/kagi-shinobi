@@ -67,6 +67,12 @@ class MemMeter {
     return this.spend.get(month) ?? 0;
   }
 
+  // Admit-all stand-in for the global Kagi call budget. The real windows are
+  // exercised against the DO in test/workers/kagi-budget.test.ts.
+  takeKagiCall(_nowMs: number, _perSecond: number, _perDay: number, _perMonth: number) {
+    return { ok: true, retry_after_ms: 0 };
+  }
+
   tryRefreshLease(nowMs: number, leaseMs: number, force = false) {
     if (!force && nowMs < this.leaseUntil) {
       return { acquired: false, retry_after_ms: this.leaseUntil - nowMs };
