@@ -4,6 +4,9 @@ on:
   push:
     branches: [main, "v1-**"]
   pull_request:
+  # Release PRs are opened with GITHUB_TOKEN, which starts no workflows, so
+  # their CI is dispatched by hand (see release-please.yml).
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

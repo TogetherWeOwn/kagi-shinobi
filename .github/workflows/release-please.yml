@@ -1,8 +1,15 @@
 name: Release Please
 
 # Versioning. Conventional commits on main become a "Release PR" that bumps
-# package.json and CHANGELOG.md; merging it publishes a GitHub release, which
-# is what .github/workflows/deploy.yml deploys from. Nothing here deploys.
+# package.json and CHANGELOG.md; merging it publishes a GitHub release and tag.
+# When that happens the `deploy` job below calls .github/workflows/deploy.yml
+# with the new tag, which then waits for `production` environment approval.
+# It is a direct call, not a `release: published` trigger, because releases
+# created with GITHUB_TOKEN never start other workflows.
+#
+# The same GITHUB_TOKEN rule means the Release PR itself gets no CI run on
+# open; dispatch CI (Actions -> CI -> Run workflow) on its branch to get the
+# green check the merge gate needs.
 #
 # First run: no tags exist yet, so the first Release PR establishes v1.0.0
 # (release-please's default initial version) and the CURRENT package.json
@@ -13,15 +20,37 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   release-please:
     # Same cost rule as CI: this repo is private, so no ubuntu-latest.
     runs-on: [self-hosted, two-selfhosted]
     timeout-minutes: 10
+    # The block the release-please-action README asks for; issues: write
+    # covers the `autorelease:` labels it manages.
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@v4
+        id: release
         with:
           release-type: node
+
+  deploy:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    # A called workflow can only keep or reduce these, so the deploy never
+    # sees the write scopes above.
+    permissions:
+      contents: read
+    # No `secrets: inherit`: the deploy's secrets are `production`
+    # environment secrets, which resolve inside the gated job itself.
+    uses: ./.github/workflows/deploy.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}

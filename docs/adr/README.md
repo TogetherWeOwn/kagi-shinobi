@@ -21,4 +21,4 @@ than quietly rewritten.
 | [0012](0012-one-error-vocabulary-two-envelopes.md) | One error vocabulary, two envelopes | accepted | 2026-08-07 |
 | [0013](0013-scoped-client-keys-and-searxng-get-search.md) | Scoped client keys, a global Kagi call budget, and a SearXNG-shaped GET /search | accepted | 2026-10-01 |
 | [0014](0014-searxng-fallback-engine.md) | SearXNG fallback engine behind `engine=auto` | accepted | 2026-10-01 |
-| [0015](0015-build-sha-in-authenticated-health.md) | Build SHA in authenticated /health | accepted | 2026-10-02 |
+| [0015](0015-build-sha-in-authenticated-health.md) | Build SHA in authenticated /health | accepted | 2026-10-01 |
