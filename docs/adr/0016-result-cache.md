@@ -36,19 +36,35 @@ but new usage-based spend stays minimal and is noted in the PR.
   caching any of them buys little and risks serving stale composed state.
 - **Single-flight in the DO, not in a module map.** `refresh.ts`'s `inflight`
   map only coalesces within one isolate; ten identical queries landing on
-  different isolates would each miss and hit Kagi. `ResultCache.claim()` is
+  different isolates would each miss and hit Kagi. `ResultCache.acquire()` is
   synchronous end to end (like every `Meter` method — no `await` between read
-  and write), so exactly one caller wins the key; losers poll `lookup()` until
-  the winner stores. An isolate-local promise map sits in front as a fast path
-  only — correctness never depends on it.
+  and write) and answers `hit`, `claimed` or `pending`, so exactly one caller
+  wins a cold key. The winner fetches, then `store()`s (or `release()`s on
+  error / unstorable response); losers re-`acquire()` with backoff (25 ms
+  doubling to 500 ms) until the entry lands. A claim is a **30 s lease**: a
+  winner that crashes stalls its losers at most that long, after which the
+  next poller takes the claim over. Losers also stop after lease + 5 s and
+  fetch themselves, so a misbehaving store cannot hang a request. There is no
+  isolate-local promise map: the DO alone carries the guarantee.
 - `meta.cache_hit` (existing) and new `meta.cache_age_s` (seconds since the
   upstream fetch; absent on miss). A hit reports `elapsed_ms` for the fast
   path and `cost_cents: 0` when the stored response carried a cost — the spend
   was settled at fetch time (Meter is untouched by hits), so claiming the old
-  cost again would mislead per-call accounting.
-- `max_age_s` param on the three cached surfaces (MCP tools, REST): entries
-  older than it are treated as misses; **`max_age_s=0` skips the read, fetches
-  fresh, and still stores** (refreshes the entry for the next caller).
+  cost again would mislead per-call accounting. `refresh_triggered` and
+  `session_stale` are dropped on a hit: they describe the upstream call that
+  filled the entry, not this one.
+- What is **not** stored: an `engine=auto` response served by the SearXNG
+  fallback (it would pin the fallback for 24 h after Kagi recovers), and any
+  body over 512 KB (DO-SQLite caps a row at 2 MB; `kagi_summarize_text` can
+  echo 1 MB of input). Both are returned normally and the claim released.
+- `confirm_muriel` is **not** in the summarize key. It is a spend gate, not a
+  result-shaping arg; a cached muriel summary costs nothing to serve, and an
+  uncached one still hits the gate in the api impl.
+- `max_age_s` param on the three cached domains (five MCP tools; REST
+  `POST /search`, `GET /search`, `POST /summarize`): entries older than it are
+  treated as misses; **`max_age_s=0` skips the read, fetches fresh, and still
+  stores** (refreshes the entry for the next caller). `kagi_fastgpt`'s
+  existing `cache: false` means the same as `max_age_s=0`.
 - Cached responses never touch `takeKagiCall` or `guardBillable` — both live in
   the impls below the facade, and the facade returns before invoking them. A
   repeat query within TTL therefore makes 0 Kagi calls and consumes 0 budget.
@@ -56,8 +72,11 @@ but new usage-based spend stays minimal and is noted in the PR.
   Kagi results stay transient: nothing survives past its TTL, and the loser
   path lazily deletes expired rows on read.
 - **Hit rate via a `kagi://cache-stats` MCP resource** (`hits`, `misses`,
-  `stores`, `entries`, `hit_rate`, per-domain breakdown). L1 hits increment
-  the DO counter explicitly, otherwise the fast path would make the stats lie.
+  `stores`, `entries`, `hit_rate`, per-domain breakdown). `misses` counts
+  winning claims, i.e. upstream fetches the cache let through; losers that
+  waited and then hit count as hits. L1 hits increment the DO counter
+  explicitly, otherwise the fast path would make the stats lie. Counters are
+  cumulative: purge deletes entries, never counts.
   A missing/broken binding fails open (fetch direct) — the cache is an
   optimization and must never break serving.
 
@@ -67,7 +86,12 @@ but new usage-based spend stays minimal and is noted in the PR.
   optional `max_age_s`; the tools/list + outputSchema snapshots change
   accordingly (regenerated, diff reviewed).
 - New `RESULT_CACHE` binding and a `v4` SQLite migration; `scheduled()` handler
-  on the worker export.
+  on the worker export; the dead `src/kagi/cache.ts` and its test are removed.
+- Cost on Workers Paid: about one to two DO requests per cached-surface call
+  (one `acquire`, plus one `store` on a miss or one `recordHit` on an L1 hit),
+  plus one per hourly purge. At the `KAGI_CALLS_PER_MONTH` scale (15 000) that
+  is well inside the plan's included 1 M DO requests and SQLite row/storage
+  allowances — expected marginal spend ≈ $0.
 - Tests: key derivation/normalization/TTLs in the unit project; DO atomicity
   (concurrent claims, expiry, purge, stats) plus facade read-through
   (hit/miss/bypass, 10-concurrent → 1 upstream, 0 Kagi calls on repeat) in the

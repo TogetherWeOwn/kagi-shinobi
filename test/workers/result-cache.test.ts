@@ -456,7 +456,7 @@ describe("KagiClient through the result cache", () => {
   it("treats fastgpt cache:false as a forced refresh", async () => {
     const fast = vi.spyOn(KagiScrapeClient.prototype, "fastGPT").mockImplementation(async ({ query }) => ({
       query,
-      output: "answer",
+      answer: "answer",
       references: [],
       meta: { impl: "scrape", cache_hit: false, elapsed_ms: 0 },
     }));
