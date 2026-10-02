@@ -20,7 +20,7 @@ from stdio to Streamable HTTP).
 | `/summarize` | POST `{url, summary_type?, target_language?}` | Admin | Direct summarize |
 | `/admin/token` | POST `{token}` | Admin | Manually rotate session token |
 | `/admin/refresh` | POST | Admin | Force Browser Rendering refresh |
-| `/health` | GET | none / Bearer | Liveness for anyone; token-staleness detail only with the Bearer |
+| `/health` | GET | none / Bearer | Liveness for anyone; token-staleness detail plus the deployed `BUILD_SHA` only with the Bearer |
 
 The admin bearer is the `ADMIN_TOKEN` secret. Use `Authorization: Bearer <token>`.
 

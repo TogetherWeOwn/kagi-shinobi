@@ -1,0 +1,112 @@
+name: Deploy
+
+# Production deploys happen ONLY here. Merging to main never deploys —
+# PR #14 proved merged != deployed.
+#
+# First-time setup (operator, one-off, needs repo admin):
+#   1. Create the `production` environment (repo Settings -> Environments)
+#      with required reviewers = owner/CEO. A run waits here until approved.
+#      Do this BEFORE the first run: a run that names a missing environment
+#      makes GitHub create it with NO required reviewers.
+#   2. Store two environment secrets on `production`:
+#        CLOUDFLARE_API_TOKEN  — API token scoped to Workers deploy for this
+#                                account (Workers Scripts:Edit; KV/DO use the
+#                                ids already in wrangler.jsonc, so this rotates
+#                                nothing — ADMIN_TOKEN and the Kagi cookie are
+#                                untouched).
+#        CLOUDFLARE_ACCOUNT_ID — the account that owns the worker.
+#   3. Dispatch this workflow against the new tag, then confirm
+#      `curl -H "Authorization: Bearer $ADMIN_TOKEN" $WORKER_URL/health`
+#      reports the tag's commit as buildSha.
+
+# Two entry points, both gated by the `production` environment below:
+#   - workflow_call: release-please.yml calls this when a Release PR merges.
+#     There is deliberately no `release: published` trigger — release-please
+#     creates releases with GITHUB_TOKEN, and GitHub never starts workflows
+#     from events that token creates, so that trigger would never fire.
+#   - workflow_dispatch: re-deploy a past release, or the first deploy.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to deploy (e.g. v1.2.3)"
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to deploy (e.g. v1.2.3)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    # Same cost rule as CI: this repo is private, so no ubuntu-latest.
+    runs-on: [self-hosted, two-selfhosted]
+    timeout-minutes: 10
+    # The approval gate. No approval from a required reviewer, no deploy.
+    # CLOUDFLARE_* are environment secrets: they resolve here, inside the
+    # gated job, on both entry points — the caller passes none.
+    environment: production
+    # One production deploy at a time; a second one queues, never cancels
+    # a deploy that is mid-flight.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      # Dispatch hands us a free-form string, not necessarily a tag. Deploying
+      # a branch head would ship unreleased commits past the release gate, so
+      # two checks stand between the input and the checkout: the name must be
+      # exactly vMAJOR.MINOR.PATCH, and the checkout below resolves it ONLY
+      # under refs/tags/. A bare ref would let actions/checkout pick a branch
+      # named `v1.2.3` before the tag of that name.
+      - name: Refuse anything that is not a version tag
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "refusing to deploy non-release ref: $TAG" >&2
+            exit 1
+          fi
+          echo "Deploying release $TAG"
+
+      - uses: actions/checkout@v7
+        with:
+          # Fails unless a real tag of this name exists.
+          ref: refs/tags/${{ inputs.tag }}
+
+      - name: Record the deployed commit SHA
+        id: sha
+        run: |
+          # A tag checkout lands detached at the commit (annotated tags are
+          # already peeled), so HEAD *is* the deployed commit.
+          SHA=$(git rev-parse HEAD)
+          test -n "$SHA"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Deploying commit $SHA"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      # --include=dev: persistent runners may carry NODE_ENV=production, under
+      # which bare `npm ci` silently skips devDependencies and the wrangler
+      # step below then fails with "wrangler: not found".
+      - run: npm ci --include=dev
+
+      - name: Deploy to production
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+          BUILD_SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          # --var wins over wrangler.jsonc's BUILD_SHA default without editing
+          # the file, so the deployed worker reports THIS commit from
+          # authenticated /health (src/token/admin.ts).
+          npx wrangler deploy --var "BUILD_SHA:${BUILD_SHA}"

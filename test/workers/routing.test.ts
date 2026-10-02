@@ -48,10 +48,10 @@ describe("public routes", () => {
 
 // /health is reachable by anyone on the internet, so its unauthenticated body
 // must be a liveness signal and nothing more. Token presence, staleness, the
-// last-refresh timestamp, and which mechanism produced the token all describe
-// the operator's credential state and belong behind the bearer.
+// last-refresh timestamp, which mechanism produced the token, and the deployed
+// build SHA all describe the operator's deployment and belong behind the bearer.
 describe("GET /health withholds token state from unauthenticated callers", () => {
-  const DETAIL_KEYS = ["token", "updatedAt", "source", "autoRefresh"] as const;
+  const DETAIL_KEYS = ["token", "updatedAt", "source", "autoRefresh", "buildSha"] as const;
 
   it("returns only a liveness flag with no bearer", async () => {
     const res = await call("/health");
@@ -81,6 +81,22 @@ describe("GET /health withholds token state from unauthenticated callers", () =>
       expect(body).toHaveProperty(key);
     }
     expect(["ok", "stale", "missing"]).toContain(body.token);
+  });
+
+  it("echoes the BUILD_SHA var so a deploy can be matched to its commit", async () => {
+    const res = await call("/health", { headers: auth }, { BUILD_SHA: "abc1234" });
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    expect(body.buildSha).toBe("abc1234");
+  });
+
+  it("defaults buildSha to dev when BUILD_SHA is unset", async () => {
+    const res = await call("/health", { headers: auth });
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(res.status).toBe(200);
+    expect(body.buildSha).toBe("dev");
   });
 });
 

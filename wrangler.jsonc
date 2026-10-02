@@ -75,6 +75,11 @@
     // Muriel is $1 per summary — require an explicit confirm flag on the
     // tool call unless this is set to "false".
     "SUMMARIZER_MURIEL_REQUIRES_CONFIRM": "true",
+    // Build SHA injected at deploy time (`wrangler deploy --var
+    // BUILD_SHA:<sha>`, see .github/workflows/deploy.yml) and echoed by
+    // authenticated /health so a deployment can be matched to its commit.
+    // Default "dev" — anything not deployed through that path.
+    "BUILD_SHA": "dev",
     // SearXNG fallback engine (ADR 0014). Empty = unconfigured: engine=auto
     // behaves exactly as before (Kagi only) and engine=searxng refuses with
     // not_configured. Set to the Tunnel hostname (or binding) of the rbx1
