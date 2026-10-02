@@ -12,8 +12,10 @@ import { landingResponse } from "./landing.js";
 import { checkAndIncrement, checkClientRate } from "./util/ratelimit.js";
 import { ResearchRun } from "./research/run.js";
 import { Meter } from "./meter/meter.js";
+import { ResultCache } from "./cache/store.js";
+import { resultCacheStub } from "./cache/read-through.js";
 
-export { KagiMcpAgent, ResearchRun, Meter };
+export { KagiMcpAgent, ResearchRun, Meter, ResultCache };
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -75,13 +77,13 @@ export default {
     }
 
     if (path === "/search" && method === "POST") {
-      return handleSearch(request, env);
+      return handleSearch(request, env, ctx);
     }
     if (path === "/search" && method === "GET") {
-      return handleSearchGet(request, env);
+      return handleSearchGet(request, env, ctx);
     }
     if (path === "/summarize" && method === "POST") {
-      return handleSummarize(request, env);
+      return handleSummarize(request, env, ctx);
     }
     if (path === "/admin/token" && method === "POST") {
       return handleAdminToken(request, env);
@@ -91,5 +93,12 @@ export default {
     }
 
     return jsonError(404, "not-found", `${method} ${path} not routed`);
+  },
+
+  // Hourly cron (wrangler.jsonc triggers): drop expired result-cache entries
+  // so Kagi results stay transient. ADR 0016.
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    const stub = resultCacheStub(env);
+    if (stub) ctx.waitUntil(stub.purge(Date.now()));
   },
 } satisfies ExportedHandler<Env>;

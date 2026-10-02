@@ -330,6 +330,7 @@ export function formatSearchDetailed(
 const metaSchema = z.object({
   impl: z.string(),
   cache_hit: z.boolean(),
+  cache_age_s: z.number().optional(),
   elapsed_ms: z.number(),
   cost_cents: z.number().optional(),
   trace_id: z.string().optional(),
