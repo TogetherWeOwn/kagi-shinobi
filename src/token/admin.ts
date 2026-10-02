@@ -61,5 +61,8 @@ export async function handleHealth(request: Request, env: Env): Promise<Response
     updatedAt: envelope?.updatedAt ?? null,
     source: envelope?.source ?? null,
     autoRefresh: env.AUTO_REFRESH_ENABLED === "true",
+    // Behind the bearer like every other detail here: the SHA identifies the
+    // deployed build, which is operator deployment state, not liveness.
+    buildSha: env.BUILD_SHA ?? "dev",
   });
 }

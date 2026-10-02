@@ -11,7 +11,7 @@ import { KagiError, type KagiErrorDetail } from "./kagi/errors.js";
 import { KAGI_ERROR_STATUS, restErrorCode } from "./kagi/http.js";
 import { isSupportedLanguage } from "./kagi/languages.js";
 import { logWarn } from "./util/log.js";
-import type { SearchResponse } from "./kagi/types.js";
+import type { SearchEngine, SearchResponse } from "./kagi/types.js";
 
 /**
  * Ceiling on queries per request, because /search fans out to one upstream
@@ -29,6 +29,7 @@ interface SearchBody {
   queries?: unknown;
   limit?: unknown;
   impl?: unknown;
+  engine?: unknown;
 }
 
 interface SummarizeBody {
@@ -46,7 +47,7 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
     return jsonError(400, "invalid-json", "Body must be JSON");
   }
 
-  const { queries, limit, impl } = body;
+  const { queries, limit, impl, engine } = body;
   if (!Array.isArray(queries) || queries.length === 0) {
     return jsonError(400, "missing-queries", "Body needs { queries: string[] }");
   }
@@ -76,6 +77,13 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
   if (normImpl === "__invalid__") {
     return jsonError(400, "invalid-impl", "impl must be 'scrape' or 'api'");
   }
+  const normEngine = normalizeEngine(engine);
+  if (normEngine === "__invalid__") {
+    return jsonError(400, "invalid-engine", "engine must be 'kagi', 'searxng' or 'auto'");
+  }
+  if (normEngine !== undefined && normEngine !== "kagi" && normImpl !== undefined) {
+    return jsonError(400, "invalid-impl", "impl only applies under engine='kagi'");
+  }
 
   let client: KagiClient;
   try {
@@ -86,7 +94,10 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
 
   const settled = await Promise.allSettled(
     normQueries.map((q) =>
-      withTimeout(client.search({ q, limit: normLimit, impl: normImpl }), 15_000),
+      withTimeout(
+        client.search({ q, limit: normLimit, impl: normImpl, engine: normEngine }),
+        15_000,
+      ),
     ),
   );
 
@@ -169,6 +180,12 @@ function normalizeImpl(v: unknown): "scrape" | "api" | undefined | "__invalid__"
   return "__invalid__";
 }
 
+function normalizeEngine(v: unknown): SearchEngine | undefined | "__invalid__" {
+  if (v === undefined) return undefined;
+  if (v === "kagi" || v === "searxng" || v === "auto") return v;
+  return "__invalid__";
+}
+
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms);
@@ -225,4 +242,66 @@ export function kagiErrorResponse(err: unknown): Response {
 function retryAfterHeader(detail: KagiErrorDetail): Record<string, string> | undefined {
   const seconds = detail.retry_after;
   return typeof seconds === "number" ? { "Retry-After": String(seconds) } : undefined;
+}
+
+/**
+ * GET /search?q=...&format=json — a SearXNG-shaped view of one query, so
+ * SearXNG's built-in `json_engine` can consume this worker directly
+ * (results_query=results, url_query=url, title_query=title,
+ * content_query=content). Shape only; no new upstream behaviour — it calls
+ * the same client.search as POST /search with a single query. ADR 0013.
+ */
+export async function handleSearchGet(request: Request, env: Env): Promise<Response> {
+  const params = new URL(request.url).searchParams;
+  const q = (params.get("q") ?? "").trim();
+  if (q.length === 0) {
+    return jsonError(400, "missing-query", "Query string needs ?q=<terms>");
+  }
+  if (q.length > 500) {
+    return jsonError(400, "invalid-query", "q must be at most 500 characters");
+  }
+  const format = params.get("format") ?? "json";
+  if (format !== "json") {
+    return jsonError(400, "invalid-format", "Only format=json is supported");
+  }
+  let limit = 10;
+  const rawLimit = params.get("limit");
+  if (rawLimit !== null) {
+    const n = Number(rawLimit);
+    if (!Number.isInteger(n) || n < 1 || n > 50) {
+      return jsonError(400, "invalid-limit", "limit must be an integer between 1 and 50");
+    }
+    limit = n;
+  }
+
+  let client: KagiClient;
+  try {
+    client = createKagiClient(env);
+  } catch (err) {
+    return kagiErrorResponse(err);
+  }
+
+  let data: SearchResponse;
+  try {
+    data = await withTimeout(client.search({ q, limit }), 15_000);
+  } catch (err) {
+    return kagiErrorResponse(err);
+  }
+
+  const results = data.results.map((r) => ({
+    url: r.url,
+    title: r.title,
+    content: r.snippet,
+    engine: "kagi",
+    ...(r.published_at ? { publishedDate: r.published_at } : {}),
+    ...(r.thumbnail_url ? { thumbnail: r.thumbnail_url } : {}),
+  }));
+  return jsonOk({
+    query: q,
+    number_of_results: results.length,
+    results,
+    answers: data.buckets?.direct_answer ? [data.buckets.direct_answer] : [],
+    suggestions: data.buckets?.related_search ?? [],
+    mode: client.mode,
+  });
 }

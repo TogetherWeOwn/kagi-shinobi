@@ -39,6 +39,16 @@ export interface RefreshLeaseVerdict {
   retry_after_ms: number;
 }
 
+export interface KagiCallVerdict {
+  ok: boolean;
+  /** Which window refused; absent when ok. */
+  window?: "second" | "day" | "month";
+  count?: number;
+  limit?: number;
+  /** 0 when ok; otherwise ms until the refusing window rolls over. */
+  retry_after_ms: number;
+}
+
 /** Single-row key for the browser-refresh lease. */
 const REFRESH_LEASE = "refresh";
 
@@ -57,6 +67,12 @@ export class Meter extends DurableObject<Env> {
         `CREATE TABLE IF NOT EXISTS spend (
           month TEXT PRIMARY KEY,
           cents REAL NOT NULL
+        )`,
+      );
+      this.ctx.storage.sql.exec(
+        `CREATE TABLE IF NOT EXISTS calls (
+          win TEXT PRIMARY KEY,
+          n INTEGER NOT NULL
         )`,
       );
       this.ctx.storage.sql.exec(
@@ -163,6 +179,51 @@ export class Meter extends DurableObject<Env> {
       nowMs + leaseMs,
     );
     return { acquired: true, retry_after_ms: 0 };
+  }
+
+  /**
+   * Admit one upstream Kagi call against the global call budget (ADR 0013),
+   * or refuse naming the window that is full. Checks all three windows before
+   * incrementing any, so a refusal never consumes budget. Synchronous end to
+   * end, like every method here. Addressed as a single global instance
+   * (idFromName("kagi-calls")). A limit of 0 disables that window.
+   */
+  takeKagiCall(nowMs: number, perSecond: number, perDay: number, perMonth: number): KagiCallVerdict {
+    const sec = Math.floor(nowMs / 1000);
+    const day = Math.floor(nowMs / 86_400_000);
+    const d = new Date(nowMs);
+    const month = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    const keys = { second: `s:${sec}`, day: `d:${day}`, month: `m:${month}` } as const;
+
+    this.ctx.storage.sql.exec("DELETE FROM calls WHERE win LIKE 's:%' AND win != ?", keys.second);
+    this.ctx.storage.sql.exec("DELETE FROM calls WHERE win LIKE 'd:%' AND win != ?", keys.day);
+
+    const read = (k: string): number => {
+      const rows = [...this.ctx.storage.sql.exec("SELECT n FROM calls WHERE win = ?", k)];
+      return rows.length > 0 ? Number(rows[0].n) : 0;
+    };
+    const nextMonthMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
+    const windows: Array<["second" | "day" | "month", string, number, number]> = [
+      ["month", keys.month, perMonth, nextMonthMs - nowMs],
+      ["day", keys.day, perDay, (day + 1) * 86_400_000 - nowMs],
+      ["second", keys.second, perSecond, (sec + 1) * 1000 - nowMs],
+    ];
+    for (const [window, key, limit, retry] of windows) {
+      if (limit <= 0) continue;
+      const count = read(key);
+      if (count >= limit) {
+        return { ok: false, window, count, limit, retry_after_ms: Math.max(1, retry) };
+      }
+    }
+    for (const [, key, limit] of windows) {
+      if (limit <= 0) continue;
+      this.ctx.storage.sql.exec(
+        `INSERT INTO calls (win, n) VALUES (?, 1)
+         ON CONFLICT (win) DO UPDATE SET n = n + 1`,
+        key,
+      );
+    }
+    return { ok: true, retry_after_ms: 0 };
   }
 
   private readSpendRow(month: string): number {

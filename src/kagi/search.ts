@@ -103,7 +103,7 @@ export function parseSearchResults(html: string, limit: number): SearchDataItem[
   // markup — returning [] would report breakage as a successful empty search.
   // A genuine zero-results page carries an explicit no-results marker instead
   // and parses to [] as before; bare HTML with neither (unit probes, error
-  // pages) keeps the old [] behavior. See ADR 0013.
+  // pages) keeps the old [] behavior. See ADR 0016.
   if (count === 0 && !hasNoResultsMarker($) && hasResultsPageMarkers($)) {
     throw new KagiMarkupChangedError(
       "Search page carried results-page markup but yielded 0 results — Kagi markup changed",

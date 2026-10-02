@@ -5,6 +5,11 @@
   "compatibility_date": "2026-07-01",
   "compatibility_flags": ["nodejs_compat"],
 
+  // Custom domain attached 2026-10-01 (Workers Domains). Declared here so a
+  // deploy keeps it. workers_dev stays on: existing MCP clients use it.
+  "routes": [{ "pattern": "shinobi.infextion.net", "custom_domain": true }],
+  "workers_dev": true,
+
   "observability": {
     "enabled": true
   },
@@ -40,7 +45,8 @@
   },
 
   // Non-secret runtime config. Secrets (ADMIN_TOKEN, KAGI_SESSION_TOKEN,
-  // KAGI_EMAIL, KAGI_PASSWORD, KAGI_API_KEY, CAPTCHA_WEBHOOK_URL) go via
+  // KAGI_EMAIL, KAGI_PASSWORD, KAGI_API_KEY, CAPTCHA_WEBHOOK_URL,
+  // CLIENT_KEYS) go via
   // `wrangler secret put`.
   "vars": {
     "AUTO_REFRESH_ENABLED": "true",
@@ -55,8 +61,30 @@
     "MAX_API_CENTS_PER_MONTH": "0",
     // Per-bearer rate limit (requests per minute). 0 disables.
     "PER_BEARER_RPM": "60",
+    // Scoped client keys (CLIENT_KEYS secret, ADR 0013): per-key requests
+    // per minute and per UTC day. Kept human-scale on purpose — scrape mode
+    // rides one Kagi subscription. 0 disables that window.
+    "CLIENT_KEY_RPM": "10",
+    "CLIENT_KEY_RPD": "300",
+    // Global budget on upstream Kagi calls, all callers combined (ADR 0013).
+    // Counted per call that reaches Kagi, not per worker request. 0 disables
+    // that window.
+    "KAGI_CALLS_PER_SECOND": "2",
+    "KAGI_CALLS_PER_DAY": "600",
+    "KAGI_CALLS_PER_MONTH": "15000",
     // Muriel is $1 per summary — require an explicit confirm flag on the
     // tool call unless this is set to "false".
-    "SUMMARIZER_MURIEL_REQUIRES_CONFIRM": "true"
+    "SUMMARIZER_MURIEL_REQUIRES_CONFIRM": "true",
+    // Build SHA injected at deploy time (`wrangler deploy --var
+    // BUILD_SHA:<sha>`, see .github/workflows/deploy.yml) and echoed by
+    // authenticated /health so a deployment can be matched to its commit.
+    // Default "dev" — anything not deployed through that path.
+    "BUILD_SHA": "dev",
+    // SearXNG fallback engine (ADR 0014). Empty = unconfigured: engine=auto
+    // behaves exactly as before (Kagi only) and engine=searxng refuses with
+    // not_configured. Set to the Tunnel hostname (or binding) of the rbx1
+    // instance — a hostname, never an IP. Pair with the SEARXNG_ACCESS_*
+    // secrets when the Tunnel sits behind Cloudflare Access.
+    "SEARXNG_BASE_URL": ""
   }
 }

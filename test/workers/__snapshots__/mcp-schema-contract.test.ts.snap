@@ -308,8 +308,17 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "engine": {
+          "description": "Which engine serves the query: 'kagi' (default, tri-mode dispatcher), 'searxng' (free SearXNG fallback, noisier), or 'auto' (Kagi while under budget and the session is healthy, otherwise SearXNG).",
+          "enum": [
+            "kagi",
+            "searxng",
+            "auto",
+          ],
+          "type": "string",
+        },
         "impl": {
-          "description": "Override which implementation handles this call. Ignored in single-impl modes.",
+          "description": "Override which implementation handles this call. Ignored in single-impl modes. Only applies under engine='kagi'.",
           "enum": [
             "scrape",
             "api",
@@ -332,6 +341,14 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
           "minItems": 1,
           "type": "array",
         },
+        "response_format": {
+          "description": "Output verbosity. concise (default) renders one citation line plus a ≤240-char snippet per result with a slim structured channel; detailed keeps the legacy full text and full structured responses.",
+          "enum": [
+            "concise",
+            "detailed",
+          ],
+          "type": "string",
+        },
       },
       "required": [
         "queries",
@@ -339,6 +356,260 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
       "type": "object",
     },
     "name": "kagi_search_fetch",
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "dedup_dropped": {
+          "type": "number",
+        },
+        "errors": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "error": {
+                "type": "string",
+              },
+              "query": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "query",
+              "error",
+            ],
+            "type": "object",
+          },
+          "type": "array",
+        },
+        "mode": {
+          "type": "string",
+        },
+        "queries": {
+          "items": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "meta": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cache_hit": {
+                        "type": "boolean",
+                      },
+                      "cost_cents": {
+                        "type": "number",
+                      },
+                      "elapsed_ms": {
+                        "type": "number",
+                      },
+                      "impl": {
+                        "type": "string",
+                      },
+                      "refresh_triggered": {
+                        "type": "boolean",
+                      },
+                      "session_stale": {
+                        "type": "boolean",
+                      },
+                      "trace_id": {
+                        "type": "string",
+                      },
+                      "warnings": {
+                        "items": {
+                          "type": "string",
+                        },
+                        "type": "array",
+                      },
+                    },
+                    "required": [
+                      "impl",
+                      "cache_hit",
+                      "elapsed_ms",
+                    ],
+                    "type": "object",
+                  },
+                  "query": {
+                    "type": "string",
+                  },
+                  "results": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                        },
+                        "rank": {
+                          "type": "number",
+                        },
+                        "ref": {
+                          "type": "string",
+                        },
+                        "url": {
+                          "type": "string",
+                        },
+                      },
+                      "required": [
+                        "id",
+                        "ref",
+                        "url",
+                        "rank",
+                      ],
+                      "type": "object",
+                    },
+                    "type": "array",
+                  },
+                },
+                "required": [
+                  "query",
+                  "results",
+                  "meta",
+                ],
+                "type": "object",
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "buckets": {
+                    "additionalProperties": {},
+                    "properties": {
+                      "direct_answer": {
+                        "type": "string",
+                      },
+                      "infobox": {
+                        "additionalProperties": {},
+                        "propertyNames": {
+                          "type": "string",
+                        },
+                        "type": "object",
+                      },
+                      "related_search": {
+                        "items": {
+                          "type": "string",
+                        },
+                        "type": "array",
+                      },
+                    },
+                    "type": "object",
+                  },
+                  "meta": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cache_hit": {
+                        "type": "boolean",
+                      },
+                      "cost_cents": {
+                        "type": "number",
+                      },
+                      "elapsed_ms": {
+                        "type": "number",
+                      },
+                      "impl": {
+                        "type": "string",
+                      },
+                      "refresh_triggered": {
+                        "type": "boolean",
+                      },
+                      "session_stale": {
+                        "type": "boolean",
+                      },
+                      "trace_id": {
+                        "type": "string",
+                      },
+                      "warnings": {
+                        "items": {
+                          "type": "string",
+                        },
+                        "type": "array",
+                      },
+                    },
+                    "required": [
+                      "impl",
+                      "cache_hit",
+                      "elapsed_ms",
+                    ],
+                    "type": "object",
+                  },
+                  "query": {
+                    "type": "string",
+                  },
+                  "results": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "props": {
+                          "additionalProperties": {},
+                          "propertyNames": {
+                            "type": "string",
+                          },
+                          "type": "object",
+                        },
+                        "published_at": {
+                          "type": "string",
+                        },
+                        "rank": {
+                          "type": "number",
+                        },
+                        "snippet": {
+                          "type": "string",
+                        },
+                        "source_domain": {
+                          "type": "string",
+                        },
+                        "source_impl": {
+                          "type": "string",
+                        },
+                        "thumbnail_url": {
+                          "type": "string",
+                        },
+                        "title": {
+                          "type": "string",
+                        },
+                        "url": {
+                          "type": "string",
+                        },
+                      },
+                      "required": [
+                        "rank",
+                        "url",
+                        "title",
+                        "snippet",
+                        "source_domain",
+                        "source_impl",
+                      ],
+                      "type": "object",
+                    },
+                    "type": "array",
+                  },
+                },
+                "required": [
+                  "query",
+                  "results",
+                  "meta",
+                ],
+                "type": "object",
+              },
+            ],
+          },
+          "type": "array",
+        },
+        "response_format": {
+          "enum": [
+            "concise",
+            "detailed",
+          ],
+          "type": "string",
+        },
+      },
+      "required": [
+        "response_format",
+        "mode",
+        "queries",
+        "errors",
+        "dedup_dropped",
+      ],
+      "type": "object",
+    },
   },
   {
     "inputSchema": {
@@ -677,8 +948,17 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "engine": {
+          "description": "Which engine serves the query: 'kagi' (default, tri-mode dispatcher), 'searxng' (free SearXNG fallback, noisier), or 'auto' (Kagi while under budget and the session is healthy, otherwise SearXNG).",
+          "enum": [
+            "kagi",
+            "searxng",
+            "auto",
+          ],
+          "type": "string",
+        },
         "impl": {
-          "description": "Override which implementation handles this call. Ignored in single-impl modes.",
+          "description": "Override which implementation handles this call. Ignored in single-impl modes. Only applies under engine='kagi'.",
           "enum": [
             "scrape",
             "api",
@@ -701,6 +981,14 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
           "minItems": 1,
           "type": "array",
         },
+        "response_format": {
+          "description": "Output verbosity. concise (default) renders one citation line plus a ≤240-char snippet per result with a slim structured channel; detailed keeps the legacy full text and full structured responses.",
+          "enum": [
+            "concise",
+            "detailed",
+          ],
+          "type": "string",
+        },
       },
       "required": [
         "queries",
@@ -708,6 +996,260 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
       "type": "object",
     },
     "name": "kagi_search_fetch",
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "dedup_dropped": {
+          "type": "number",
+        },
+        "errors": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "error": {
+                "type": "string",
+              },
+              "query": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "query",
+              "error",
+            ],
+            "type": "object",
+          },
+          "type": "array",
+        },
+        "mode": {
+          "type": "string",
+        },
+        "queries": {
+          "items": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "meta": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cache_hit": {
+                        "type": "boolean",
+                      },
+                      "cost_cents": {
+                        "type": "number",
+                      },
+                      "elapsed_ms": {
+                        "type": "number",
+                      },
+                      "impl": {
+                        "type": "string",
+                      },
+                      "refresh_triggered": {
+                        "type": "boolean",
+                      },
+                      "session_stale": {
+                        "type": "boolean",
+                      },
+                      "trace_id": {
+                        "type": "string",
+                      },
+                      "warnings": {
+                        "items": {
+                          "type": "string",
+                        },
+                        "type": "array",
+                      },
+                    },
+                    "required": [
+                      "impl",
+                      "cache_hit",
+                      "elapsed_ms",
+                    ],
+                    "type": "object",
+                  },
+                  "query": {
+                    "type": "string",
+                  },
+                  "results": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                        },
+                        "rank": {
+                          "type": "number",
+                        },
+                        "ref": {
+                          "type": "string",
+                        },
+                        "url": {
+                          "type": "string",
+                        },
+                      },
+                      "required": [
+                        "id",
+                        "ref",
+                        "url",
+                        "rank",
+                      ],
+                      "type": "object",
+                    },
+                    "type": "array",
+                  },
+                },
+                "required": [
+                  "query",
+                  "results",
+                  "meta",
+                ],
+                "type": "object",
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "buckets": {
+                    "additionalProperties": {},
+                    "properties": {
+                      "direct_answer": {
+                        "type": "string",
+                      },
+                      "infobox": {
+                        "additionalProperties": {},
+                        "propertyNames": {
+                          "type": "string",
+                        },
+                        "type": "object",
+                      },
+                      "related_search": {
+                        "items": {
+                          "type": "string",
+                        },
+                        "type": "array",
+                      },
+                    },
+                    "type": "object",
+                  },
+                  "meta": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cache_hit": {
+                        "type": "boolean",
+                      },
+                      "cost_cents": {
+                        "type": "number",
+                      },
+                      "elapsed_ms": {
+                        "type": "number",
+                      },
+                      "impl": {
+                        "type": "string",
+                      },
+                      "refresh_triggered": {
+                        "type": "boolean",
+                      },
+                      "session_stale": {
+                        "type": "boolean",
+                      },
+                      "trace_id": {
+                        "type": "string",
+                      },
+                      "warnings": {
+                        "items": {
+                          "type": "string",
+                        },
+                        "type": "array",
+                      },
+                    },
+                    "required": [
+                      "impl",
+                      "cache_hit",
+                      "elapsed_ms",
+                    ],
+                    "type": "object",
+                  },
+                  "query": {
+                    "type": "string",
+                  },
+                  "results": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "props": {
+                          "additionalProperties": {},
+                          "propertyNames": {
+                            "type": "string",
+                          },
+                          "type": "object",
+                        },
+                        "published_at": {
+                          "type": "string",
+                        },
+                        "rank": {
+                          "type": "number",
+                        },
+                        "snippet": {
+                          "type": "string",
+                        },
+                        "source_domain": {
+                          "type": "string",
+                        },
+                        "source_impl": {
+                          "type": "string",
+                        },
+                        "thumbnail_url": {
+                          "type": "string",
+                        },
+                        "title": {
+                          "type": "string",
+                        },
+                        "url": {
+                          "type": "string",
+                        },
+                      },
+                      "required": [
+                        "rank",
+                        "url",
+                        "title",
+                        "snippet",
+                        "source_domain",
+                        "source_impl",
+                      ],
+                      "type": "object",
+                    },
+                    "type": "array",
+                  },
+                },
+                "required": [
+                  "query",
+                  "results",
+                  "meta",
+                ],
+                "type": "object",
+              },
+            ],
+          },
+          "type": "array",
+        },
+        "response_format": {
+          "enum": [
+            "concise",
+            "detailed",
+          ],
+          "type": "string",
+        },
+      },
+      "required": [
+        "response_format",
+        "mode",
+        "queries",
+        "errors",
+        "dedup_dropped",
+      ],
+      "type": "object",
+    },
   },
   {
     "inputSchema": {

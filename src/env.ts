@@ -33,6 +33,14 @@ declare global {
       // KagiNotConfiguredError before hitting the network.
       KAGI_API_KEY?: string;
       CAPTCHA_WEBHOOK_URL?: string;
+      // Scoped client keys, JSON {name: sha256hex(key)}. See ADR 0013.
+      CLIENT_KEYS?: string;
+      // SearXNG fallback (ADR 0014). SEARXNG_BASE_URL is a var in
+      // wrangler.jsonc (a hostname, not a credential); the Access service
+      // token pair are secrets, set only when the Tunnel sits behind
+      // Cloudflare Access. Absent for a VPC-adjacent binding.
+      SEARXNG_ACCESS_CLIENT_ID?: string;
+      SEARXNG_ACCESS_CLIENT_SECRET?: string;
     }
   }
 }

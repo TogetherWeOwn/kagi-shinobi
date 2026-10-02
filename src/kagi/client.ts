@@ -14,13 +14,17 @@ import type { KagiMode, ModeResolution } from "./mode.js";
 import { resolveMode } from "./mode.js";
 import { KagiScrapeClient } from "./scrape/index.js";
 import { KagiApiImpl } from "./api/index.js";
+import { SearxngClient } from "../searxng/client.js";
+import { KagiError } from "./errors.js";
+import { addWarning } from "../mcp/meta.js";
 import type {
   EnrichResponse,
   ExtractResponse,
   FastGPTResponse,
-  ImplKind,
+  KagiImpl,
   PersonalizationRule,
   RankResponse,
+  SearchEngine,
   SearchResponse,
   SummarizeResponse,
   SummarizerEngine,
@@ -36,7 +40,15 @@ export interface SearchArgs {
   exclude_domains?: string[];
   date_range?: { from?: string; to?: string };
   safe_search?: boolean;
-  impl?: ImplKind;
+  impl?: KagiImpl;
+  /**
+   * Which engine serves the query. `kagi` (default) routes through the
+   * tri-mode dispatcher exactly as before; `searxng` goes to the SearXNG
+   * fallback; `auto` tries Kagi first and serves SearXNG on any Kagi-side
+   * failure, annotating `meta.warnings`. `impl` only applies under
+   * `engine=kagi` — pairing it with another engine is a 400.
+   */
+  engine?: SearchEngine;
 }
 
 export interface SummarizeArgs {
@@ -46,13 +58,13 @@ export interface SummarizeArgs {
   style: SummaryStyle;
   engine?: SummarizerEngine;
   confirm_muriel?: boolean;
-  impl?: ImplKind;
+  impl?: KagiImpl;
 }
 
 export interface FastGPTArgs {
   query: string;
   cache?: boolean;
-  impl?: ImplKind;
+  impl?: KagiImpl;
 }
 
 export interface ExtractArgs {
@@ -68,12 +80,14 @@ export interface EnrichArgs {
 export class KagiClient {
   private scrape: KagiScrapeClient;
   private api: KagiApiImpl;
+  private searxng: SearxngClient;
   readonly modeInfo: ModeResolution;
 
   constructor(env: Env) {
     this.modeInfo = resolveMode(env);
     this.scrape = new KagiScrapeClient(env);
     this.api = new KagiApiImpl(env);
+    this.searxng = new SearxngClient(env);
   }
 
   get mode(): KagiMode {
@@ -81,6 +95,19 @@ export class KagiClient {
   }
 
   async search(args: SearchArgs): Promise<SearchResponse> {
+    const engine = args.engine ?? "kagi";
+    if (engine === "searxng") {
+      if (args.impl !== undefined) {
+        throw new Error("impl only applies under engine='kagi', not engine='searxng'");
+      }
+      return this.searxng.search({ q: args.q, limit: args.limit });
+    }
+    if (engine === "auto") {
+      if (args.impl !== undefined) {
+        throw new Error("impl only applies under engine='kagi', not engine='auto'");
+      }
+      return this.searchAuto(args);
+    }
     const impl = pickImpl("kagi_search_fetch", this.mode, args.impl);
     if (impl === "scrape") {
       return this.scrape.search({ q: args.q, limit: args.limit });
@@ -95,6 +122,41 @@ export class KagiClient {
       date_range: args.date_range,
       safe_search: args.safe_search,
     });
+  }
+
+  /**
+   * engine=auto: Kagi while it answers, SearXNG otherwise.
+   *
+   * "Under budget and session healthy" is decided by trying Kagi first: the
+   * spend guard (api mode) and the session/token flow (scrape mode) already
+   * throw KagiError on exactly those conditions, so a pre-check would only
+   * duplicate their judgment and race it. Any KagiError — budget, auth,
+   * captcha, upstream, timeout — falls through to the free tier. Programming
+   * bugs (non-KagiError) propagate: the fallback must not mask them.
+   *
+   * When SearXNG is unconfigured, or fails too, the caller gets the original
+   * Kagi error — the root cause, not the fallback's shadow.
+   */
+  private async searchAuto(args: SearchArgs): Promise<SearchResponse> {
+    let kagiErr: KagiError;
+    try {
+      return await this.search({ ...args, engine: "kagi" });
+    } catch (err) {
+      if (!(err instanceof KagiError)) throw err;
+      kagiErr = err;
+    }
+    try {
+      const fallback = await this.searxng.search({ q: args.q, limit: args.limit });
+      return {
+        ...fallback,
+        meta: addWarning(
+          fallback.meta,
+          `Kagi unavailable (${kagiErr.kind}): ${kagiErr.message}; served by SearXNG fallback`,
+        ),
+      };
+    } catch {
+      throw kagiErr;
+    }
   }
 
   async summarize(args: SummarizeArgs): Promise<SummarizeResponse> {
@@ -144,7 +206,7 @@ export class KagiClient {
     return this.api.enrichNews(args);
   }
 
-  async smallWeb(args: { q?: string; limit?: number; impl?: ImplKind }): Promise<SearchResponse> {
+  async smallWeb(args: { q?: string; limit?: number; impl?: KagiImpl }): Promise<SearchResponse> {
     const impl = pickImpl("kagi_small_web", this.mode, args.impl);
     if (impl === "scrape") {
       return this.scrape.smallWeb({ q: args.q, limit: args.limit });
@@ -156,7 +218,7 @@ export class KagiClient {
     urls: string[];
     q?: string;
     rules?: PersonalizationRule[];
-    impl?: ImplKind;
+    impl?: KagiImpl;
   }): Promise<RankResponse> {
     const impl = pickImpl("kagi_personalized_rank", this.mode, args.impl);
     if (impl === "scrape") {

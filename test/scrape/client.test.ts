@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   scrapeSmallWeb: vi.fn(),
   scrapeRank: vi.fn(),
   scrapeFastGPT: vi.fn(),
+  takeKagiCall: vi.fn(),
 }));
 
 vi.mock("../../src/kagi/search.js", () => ({ search: mocks.rawSearch }));
@@ -37,6 +38,10 @@ vi.mock("../../src/token/refresh.js", () => ({
 vi.mock("../../src/kagi/scrape/smallweb.js", () => ({ scrapeSmallWeb: mocks.scrapeSmallWeb }));
 vi.mock("../../src/kagi/scrape/rank.js", () => ({ scrapeRank: mocks.scrapeRank }));
 vi.mock("../../src/kagi/scrape/fastgpt.js", () => ({ scrapeFastGPT: mocks.scrapeFastGPT }));
+// The global call budget (ADR 0013) is pinned in test/kagi/budget.test.ts and
+// test/workers/kagi-budget.test.ts; here it only needs to admit, and to be
+// counted so each upstream call is shown to pass through it.
+vi.mock("../../src/kagi/budget.js", () => ({ takeKagiCall: mocks.takeKagiCall }));
 
 const { KagiScrapeClient } = await import("../../src/kagi/scrape/index");
 
@@ -300,7 +305,29 @@ describe("rank", () => {
     expect(mocks.scrapeRank).toHaveBeenCalledWith(
       { urls: ["https://a"], q: "widgets" },
       "tok-fresh",
+      expect.any(Function),
     );
+  });
+
+  it("hands rank a per-probe hook that takes from the call budget", async () => {
+    await client().rank({ urls: ["https://a"], q: "widgets" });
+    const hook = mocks.scrapeRank.mock.calls[0][2] as () => Promise<void>;
+    mocks.takeKagiCall.mockClear();
+    await hook();
+    expect(mocks.takeKagiCall).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("call budget (ADR 0013)", () => {
+  it("takes one call per upstream request", async () => {
+    await client().search({ q: "x" });
+    expect(mocks.takeKagiCall).toHaveBeenCalledTimes(1);
+  });
+
+  it("a refused budget stops the upstream call", async () => {
+    mocks.takeKagiCall.mockRejectedValueOnce(new Error("budget"));
+    await expect(client().search({ q: "x" })).rejects.toThrow("budget");
+    expect(mocks.rawSearch).not.toHaveBeenCalled();
   });
 });
 

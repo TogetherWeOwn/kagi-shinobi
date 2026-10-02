@@ -17,6 +17,7 @@ import type { SearchResponse, SummarizeResponse, SummarizerEngine, SummaryStyle 
 import { scrapeSmallWeb, type ScrapeSmallWebArgs } from "./smallweb.js";
 import { scrapeRank, type ScrapeRankArgs } from "./rank.js";
 import { scrapeFastGPT, type ScrapeFastGPTArgs } from "./fastgpt.js";
+import { takeKagiCall } from "../budget.js";
 import type { FastGPTResponse, RankResponse } from "../types.js";
 
 export interface ScrapeSearchArgs {
@@ -40,10 +41,12 @@ export class KagiScrapeClient {
     const { token, refreshTriggered, stale } = await this.currentToken();
     let raw;
     try {
+      await takeKagiCall(this.env);
       raw = await rawSearch(args.q, token, args.limit ?? 10);
     } catch (err) {
       if (!(err instanceof KagiAuthError)) throw err;
       const fresh = await this.refreshOrThrow("search 401/403");
+      await takeKagiCall(this.env);
       raw = await rawSearch(args.q, fresh, args.limit ?? 10);
       return scrapeSearchToCanonical(args.q, raw.data, {
         impl: "scrape",
@@ -72,6 +75,7 @@ export class KagiScrapeClient {
     const { token, refreshTriggered, stale } = await this.currentToken();
     const engine: SummarizerEngine = "scrape-default";
     try {
+      await takeKagiCall(this.env);
       const raw = await rawSummarize(args.ref, token, {
         type: args.style,
         language: args.language,
@@ -93,6 +97,7 @@ export class KagiScrapeClient {
     } catch (err) {
       if (!(err instanceof KagiAuthError)) throw err;
       const fresh = await this.refreshOrThrow("summarize 401/403");
+      await takeKagiCall(this.env);
       const raw = await rawSummarize(args.ref, fresh, {
         type: args.style,
         language: args.language,
@@ -118,24 +123,28 @@ export class KagiScrapeClient {
     // Browse-recent (empty q) uses the free RSS feed — no session needed.
     // Search-in-Small-Web needs the cookie.
     if (!args.q) {
+      await takeKagiCall(this.env);
       return scrapeSmallWeb(args, undefined);
     }
     const { token } = await this.currentToken();
+    await takeKagiCall(this.env);
     return scrapeSmallWeb(args, token);
   }
 
   async rank(args: ScrapeRankArgs): Promise<RankResponse> {
     const { token } = await this.currentToken();
-    return scrapeRank(args, token);
+    return scrapeRank(args, token, () => takeKagiCall(this.env));
   }
 
   async fastGPT(args: ScrapeFastGPTArgs): Promise<FastGPTResponse> {
     const { token } = await this.currentToken();
     try {
+      await takeKagiCall(this.env);
       return await scrapeFastGPT(args, token);
     } catch (err) {
       if (!(err instanceof KagiAuthError)) throw err;
       const fresh = await this.refreshOrThrow("fastgpt 401/403");
+      await takeKagiCall(this.env);
       return await scrapeFastGPT(args, fresh);
     }
   }

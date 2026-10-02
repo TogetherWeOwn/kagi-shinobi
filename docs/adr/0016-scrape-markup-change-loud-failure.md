@@ -1,4 +1,4 @@
-# ADR 0013 — Fail loudly when Kagi's search markup moves
+# ADR 0016 — Fail loudly when Kagi's search markup moves
 
 **Status:** Accepted — 2026-10-01
 **Relates to:** [ADR 0012](0012-one-error-vocabulary-two-envelopes.md)

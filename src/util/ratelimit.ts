@@ -45,3 +45,48 @@ export async function checkAndIncrement(
   const id = env.METER.idFromName(await bearerHash(bearer));
   return env.METER.get(id).checkRate(limit, minute, ms % 60_000);
 }
+
+// ---------------------------------------------------------------------------
+// Client-key limits (ADR 0013).
+//
+// A client key is metered by its *name*, not its bearer, so the bucket
+// survives a key being re-issued under the same name. Two windows: a
+// per-minute burst cap (CLIENT_KEY_RPM) and a per-UTC-day cap
+// (CLIENT_KEY_RPD). The day window reuses Meter.checkRate with the day index
+// as the bucket — the DO only needs buckets to be monotonic — and computes
+// its own Retry-After because checkRate's assumes a one-minute bucket.
+
+function readVar(raw: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(raw ?? String(fallback), 10);
+  if (Number.isNaN(parsed) || parsed < 0) return 0;
+  return parsed;
+}
+
+export function readClientLimits(env: Env): { rpm: number; rpd: number } {
+  return { rpm: readVar(env.CLIENT_KEY_RPM, 10), rpd: readVar(env.CLIENT_KEY_RPD, 300) };
+}
+
+export async function checkClientRate(
+  env: Env,
+  name: string,
+  now: Date = new Date(),
+): Promise<RateLimitResult> {
+  const { rpm, rpd } = readClientLimits(env);
+  const ms = now.getTime();
+
+  if (rpd > 0) {
+    const day = Math.floor(ms / 86_400_000);
+    const stub = env.METER.get(env.METER.idFromName(`client-day:${name}`));
+    const verdict = await stub.checkRate(rpd, day, 0);
+    if (!verdict.allowed) {
+      const untilMidnight = Math.max(1, Math.ceil((86_400_000 - (ms % 86_400_000)) / 1000));
+      return { ...verdict, retry_after_seconds: untilMidnight };
+    }
+  }
+  if (rpm > 0) {
+    const minute = Math.floor(ms / 60_000);
+    const stub = env.METER.get(env.METER.idFromName(`client-minute:${name}`));
+    return stub.checkRate(rpm, minute, ms % 60_000);
+  }
+  return { allowed: true, limit_rpm: 0, count: 0 };
+}

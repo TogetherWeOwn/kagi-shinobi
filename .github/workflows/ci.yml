@@ -4,6 +4,9 @@ on:
   push:
     branches: [main, "v1-**"]
   pull_request:
+  # Release PRs are opened with GITHUB_TOKEN, which starts no workflows, so
+  # their CI is dispatched by hand (see release-please.yml).
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -14,7 +17,11 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Private repo: GitHub-hosted minutes are billed, so CI runs on the org's
+    # self-hosted runners instead. No job container: node + workerd only — no
+    # services, no browsers (Playwright uses its `request` fixture only, and
+    # CI never downloads browser binaries).
+    runs-on: [self-hosted, two-selfhosted]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
