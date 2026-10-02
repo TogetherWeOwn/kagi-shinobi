@@ -120,9 +120,11 @@ async function buildAgent(mode = "scrape", clientOverrides: Record<string, unkno
   };
   agent.server = server;
   Object.defineProperty(agent, "env", { value: env, configurable: true });
+  const waitUntil = vi.fn();
+  Object.defineProperty(agent, "ctx", { value: { waitUntil }, configurable: true });
   await agent.init();
 
-  return { tools, schemas, client };
+  return { tools, schemas, client, waitUntil };
 }
 
 /** Run one registered tool and return its result envelope. */
@@ -922,5 +924,37 @@ describe("kagiErrorMcp", () => {
       structuredContent: structured,
       isError: true,
     });
+  });
+});
+
+// ADR 0016: the five cached tools accept max_age_s and forward it, and the
+// cache's background work rides the Durable Object's waitUntil.
+describe("result cache wiring", () => {
+  it.each([
+    ["kagi_search_fetch", { queries: ["q"] }, "search"],
+    ["kagi_summarizer", { url: "https://example.test" }, "summarize"],
+    ["kagi_summarize_url", { url: "https://example.test" }, "summarize"],
+    ["kagi_summarize_text", { text: "some text" }, "summarize"],
+    ["kagi_fastgpt", { query: "q" }, "fastGPT"],
+  ])("%s forwards max_age_s to the client", async (tool, args, method) => {
+    const { tools, client } = await buildAgent("hybrid");
+
+    await tools.get(tool)!({ ...args, max_age_s: 0 });
+
+    expect(client[method as keyof typeof client]).toHaveBeenCalledWith(
+      expect.objectContaining({ max_age_s: 0 }),
+    );
+  });
+
+  it("builds the client with the agent's waitUntil", async () => {
+    const { waitUntil } = await buildAgent();
+    const opts = createKagiClient.mock.calls.at(-1)![1] as {
+      waitUntil: (p: Promise<unknown>) => void;
+    };
+    const work = Promise.resolve();
+
+    opts.waitUntil(work);
+
+    expect(waitUntil).toHaveBeenCalledWith(work);
   });
 });

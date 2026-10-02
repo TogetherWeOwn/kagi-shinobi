@@ -205,6 +205,40 @@ describe("handleSearch input validation", () => {
     expect(res.status).toBe(400);
     expect((await json(res)).error).toMatchObject({ code: "invalid-impl" });
   });
+
+  // ADR 0016: max_age_s bounds how old a cached result may be; 0 skips it.
+  it.each([0, 3600])("passes max_age_s=%i through to the client", async (max_age_s) => {
+    const client = fakeClient();
+    createKagiClient.mockReturnValue(client);
+
+    await handleSearch(post({ queries: ["q"], max_age_s }), makeEnv());
+
+    expect(client.search).toHaveBeenCalledWith(expect.objectContaining({ max_age_s }));
+  });
+
+  it.each([-1, 1.5, "60", null])("rejects max_age_s=%j", async (max_age_s) => {
+    const res = await handleSearch(post({ queries: ["q"], max_age_s }), makeEnv());
+
+    expect(res.status).toBe(400);
+    expect((await json(res)).error).toMatchObject({ code: "invalid-max-age" });
+  });
+
+  it("hands the cache's background work to the request's waitUntil", async () => {
+    const waitUntil = vi.fn();
+
+    await handleSearch(post({ queries: ["q"] }), makeEnv(), { waitUntil } as never);
+
+    const opts = createKagiClient.mock.calls[0][1] as { waitUntil: (p: Promise<unknown>) => void };
+    const work = Promise.resolve();
+    opts.waitUntil(work);
+    expect(waitUntil).toHaveBeenCalledWith(work);
+  });
+
+  it("passes no waitUntil without an execution context", async () => {
+    await handleSearch(post({ queries: ["q"] }), makeEnv());
+
+    expect(createKagiClient.mock.calls[0][1]).toEqual({});
+  });
 });
 
 // One request fans out to one upstream call per query. The per-minute rate
@@ -405,6 +439,27 @@ describe("handleSummarize input validation", () => {
     );
 
     expect((await json(res)).error).toMatchObject({ code: "invalid-impl" });
+  });
+
+  it("passes max_age_s through to the client", async () => {
+    const client = fakeClient();
+    createKagiClient.mockReturnValue(client);
+
+    await handleSummarize(post({ url: "https://example.test", max_age_s: 0 }), makeEnv(), {
+      waitUntil: vi.fn(),
+    } as never);
+
+    expect(client.summarize).toHaveBeenCalledWith(expect.objectContaining({ max_age_s: 0 }));
+  });
+
+  it("rejects a negative max_age_s", async () => {
+    const res = await handleSummarize(
+      post({ url: "https://example.test", max_age_s: -5 }),
+      makeEnv(),
+    );
+
+    expect(res.status).toBe(400);
+    expect((await json(res)).error).toMatchObject({ code: "invalid-max-age" });
   });
 });
 
