@@ -10,6 +10,7 @@ export const KAGI_ERROR_KINDS = [
   "auth",
   "captcha",
   "parse",
+  "markup_changed",
   "upstream",
   "rate_limit",
   "budget_exceeded",
@@ -62,9 +63,22 @@ export class KagiUpstreamError extends KagiError {
 }
 
 export class KagiParseError extends KagiError {
-  constructor(msg: string) {
-    super("parse", msg);
+  constructor(msg: string, detail: KagiErrorDetail = {}) {
+    super("parse", msg, detail);
     this.name = "KagiParseError";
+  }
+}
+
+// The search page (HTTP 200) carried results-page markers but yielded zero
+// parsed results — Kagi renamed or restructured its markup. A subclass of
+// KagiParseError, not a sibling, so existing `instanceof KagiParseError`
+// guards keep catching it while `kind` distinguishes breakage ("fix the
+// parser") from a genuine parse failure. See the guard in ./search.ts.
+export class KagiMarkupChangedError extends KagiParseError {
+  constructor(msg: string, detail: KagiErrorDetail = {}) {
+    super(msg, detail);
+    this.kind = "markup_changed";
+    this.name = "KagiMarkupChangedError";
   }
 }
 

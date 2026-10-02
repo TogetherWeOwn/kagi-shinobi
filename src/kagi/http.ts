@@ -25,6 +25,11 @@ export const KAGI_ERROR_STATUS: Record<KagiErrorKind, number> = {
   // someone about exactly this — which is 503's meaning, not 502's.
   captcha: 503,
   parse: 502,
+  // The parser ran but Kagi's markup moved under it. Same 502 as parse: the
+  // gateway is fine, the upstream page is not what the parser expects. The
+  // kind (and REST code) is what distinguishes "fix the parser" from a
+  // generic parse failure. See ADR 0016.
+  markup_changed: 502,
   upstream: 502,
   rate_limit: 429,
   budget_exceeded: 402,

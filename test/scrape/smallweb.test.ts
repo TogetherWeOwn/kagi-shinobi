@@ -1,7 +1,26 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { fetchSmallWebRss, scrapeSmallWeb } from "../../src/kagi/scrape/smallweb";
-import { KagiAuthError, KagiParseError, KagiUpstreamError } from "../../src/kagi/errors";
+import {
+  KagiAuthError,
+  KagiMarkupChangedError,
+  KagiParseError,
+  KagiUpstreamError,
+} from "../../src/kagi/errors";
 import { restoreFetch, stubFetch } from "../_helpers";
+
+// String paths rather than `new URL(...)`: the global URL type here is the
+// Workers one, which node's readFileSync overloads reject at typecheck.
+const SEARCH_FIXTURE_DIR = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../fixtures/search",
+);
+
+function searchFixture(name: string): string {
+  return readFileSync(join(SEARCH_FIXTURE_DIR, name), "utf8");
+}
 
 const RSS_FIXTURE = `<?xml version="1.0"?>
 <rss version="2.0">
@@ -219,12 +238,31 @@ describe("scrapeSmallWeb (q → search)", () => {
     );
   });
 
-  it("returns an empty result list when the search yields nothing", async () => {
-    stubFetch(async () => new Response("<html><body></body></html>", { status: 200 }));
+  it("returns an empty result list for a genuine zero-results page", async () => {
+    // The zero-results fixture carries an explicit no-results marker, which
+    // takes precedence over the results-page chrome — this is what
+    // distinguishes "nothing matched" from a renamed selector.
+    stubFetch(async () => new Response(searchFixture("zero-results.html"), { status: 200 }));
 
     const resp = await scrapeSmallWeb({ q: "linux" }, TOKEN);
 
     expect(resp.results).toEqual([]);
+  });
+
+  it("fails loudly when the smallweb search markup moves", async () => {
+    // news-heavy carries only top-level hits, so renaming the selector empties
+    // the parse while related-searches + load-more chrome trips the guard.
+    // (grouped-results would still yield its intact grouped hits — covered in
+    // search-parser.test.ts instead.)
+    const renamed = searchFixture("news-heavy.html").replaceAll(
+      "search-result",
+      "renamed-result",
+    );
+    stubFetch(async () => new Response(renamed, { status: 200 }));
+
+    await expect(scrapeSmallWeb({ q: "linux" }, TOKEN)).rejects.toBeInstanceOf(
+      KagiMarkupChangedError,
+    );
   });
 });
 

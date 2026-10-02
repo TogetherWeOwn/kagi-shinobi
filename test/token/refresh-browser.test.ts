@@ -9,6 +9,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { makeEnv } from "../_helpers";
 import type { Env } from "../../src/env";
+import { CHROME_UA, CHROME_VERSION } from "../../src/kagi/headers";
 
 const { launch } = vi.hoisted(() => ({ launch: vi.fn() }));
 vi.mock("@cloudflare/puppeteer", () => ({ default: { launch } }));
@@ -99,7 +100,11 @@ describe("successful login", () => {
 
     await refreshTokenViaBrowser(refreshableEnv());
 
-    expect(page.setUserAgent).toHaveBeenCalledWith(expect.stringContaining("Chrome/131"));
+    // The login flow reuses CHROME_UA from src/kagi/headers.ts — pinned by
+    // exact value, not substring, so the login fingerprint cannot drift a
+    // single token away from the request fingerprint.
+    expect(page.setUserAgent).toHaveBeenCalledWith(CHROME_UA);
+    expect(CHROME_UA).toContain(`Chrome/${CHROME_VERSION}`);
     expect(page.setExtraHTTPHeaders).toHaveBeenCalledWith({
       "Accept-Language": "en-US,en;q=0.9",
     });
