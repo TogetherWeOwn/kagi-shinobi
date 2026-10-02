@@ -68,6 +68,18 @@ const SUMMARIZE_TEXT_DESCRIPTION =
 
 const ENGINE_ENUM = ["cecil", "agnes", "daphne", "muriel"] as const;
 
+// Result cache bound on the five cached tools (search, fastgpt, the three
+// summarizers). ADR 0017.
+const maxAgeSchema = z
+  .number()
+  .int()
+  .min(0)
+  .optional()
+  .describe(
+    "Oldest acceptable cached result, in seconds (default: the cache TTL — search 24h, " +
+      "fastgpt 6h, summaries 7d). 0 skips the cache and fetches fresh.",
+  );
+
 const RANK_DESCRIPTION =
   "Rerank a list of URLs by how well they align with Kagi's personalization " +
   "for the account. Scrape mode uses site: probes against the account's saved " +
@@ -99,7 +111,7 @@ export class KagiMcpAgent extends McpAgent<Env> {
   });
 
   async init(): Promise<void> {
-    const client = createKagiClient(this.env);
+    const client = createKagiClient(this.env, { waitUntil: (p) => this.ctx.waitUntil(p) });
     const mode = client.mode;
 
     // Always registered — capability matrix marks these "both".
@@ -283,8 +295,9 @@ export class KagiMcpAgent extends McpAgent<Env> {
           .describe("Required when engine=muriel unless SUMMARIZER_MURIEL_REQUIRES_CONFIRM=false."),
         cache: z.boolean().optional(),
         impl: z.enum(["scrape", "api"]).optional(),
+        max_age_s: maxAgeSchema,
       },
-      async ({ url, engine, summary_type, target_language, confirm_muriel, impl }) => {
+      async ({ url, engine, summary_type, target_language, confirm_muriel, impl, max_age_s }) => {
         try {
           const language = target_language ?? "EN";
           if (target_language && !isSupportedLanguage(target_language)) {
@@ -302,6 +315,7 @@ export class KagiMcpAgent extends McpAgent<Env> {
             engine,
             confirm_muriel,
             impl,
+            max_age_s,
           });
           return mcpResult({
             text: canonical.summary || "",
@@ -325,8 +339,9 @@ export class KagiMcpAgent extends McpAgent<Env> {
         target_language: z.string().optional(),
         confirm_muriel: z.boolean().optional(),
         cache: z.boolean().optional(),
+        max_age_s: maxAgeSchema,
       },
-      async ({ text, engine, summary_type, target_language, confirm_muriel }) => {
+      async ({ text, engine, summary_type, target_language, confirm_muriel, max_age_s }) => {
         try {
           const language = target_language ?? "EN";
           if (target_language && !isSupportedLanguage(target_language)) {
@@ -343,6 +358,7 @@ export class KagiMcpAgent extends McpAgent<Env> {
             style: summary_type,
             engine,
             confirm_muriel,
+            max_age_s,
           });
           return mcpResult({
             text: canonical.summary || "",
@@ -396,13 +412,14 @@ export class KagiMcpAgent extends McpAgent<Env> {
                 "under budget and the session is healthy, otherwise SearXNG).",
             ),
           response_format: responseFormatSchema,
+          max_age_s: maxAgeSchema,
         },
         outputSchema: searchOutputSchema,
       },
-      async ({ queries, limit, impl, engine, response_format }) => {
+      async ({ queries, limit, impl, engine, response_format, max_age_s }) => {
         const cap = limit ?? 10;
         const settled = await Promise.allSettled(
-          queries.map((q) => client.search({ q, limit: cap, impl, engine })),
+          queries.map((q) => client.search({ q, limit: cap, impl, engine, max_age_s })),
         );
 
         const perQuery: (SearchResponse | null)[] = [];
@@ -457,8 +474,9 @@ export class KagiMcpAgent extends McpAgent<Env> {
           .describe(
             "Override which implementation handles this call. Ignored in single-impl modes.",
           ),
+        max_age_s: maxAgeSchema,
       },
-      async ({ url, summary_type, target_language, impl }) => {
+      async ({ url, summary_type, target_language, impl, max_age_s }) => {
         try {
           const language = target_language ?? "EN";
           if (target_language && !isSupportedLanguage(target_language)) {
@@ -476,6 +494,7 @@ export class KagiMcpAgent extends McpAgent<Env> {
             language,
             style: summary_type,
             impl,
+            max_age_s,
           });
           return mcpResult({
             text: canonical.summary || "",
@@ -530,10 +549,11 @@ export class KagiMcpAgent extends McpAgent<Env> {
           .describe(
             "Override which implementation handles this call. Hybrid default is scrape (free).",
           ),
+        max_age_s: maxAgeSchema,
       },
-      async ({ query, cache, impl }) => {
+      async ({ query, cache, impl, max_age_s }) => {
         try {
-          const canonical = await client.fastGPT({ query, cache, impl });
+          const canonical = await client.fastGPT({ query, cache, impl, max_age_s });
           const text =
             canonical.answer +
             (canonical.references.length > 0

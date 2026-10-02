@@ -29,6 +29,8 @@ export type SearchEngine = "kagi" | "searxng" | "auto";
 export interface MetaBlock {
   impl: ImplKind;
   cache_hit: boolean;
+  /** Seconds since the upstream fetch that produced this response. Absent on a miss. */
+  cache_age_s?: number;
   elapsed_ms: number;
   cost_cents?: number;          // API impl only
   trace_id?: string;            // API meta.trace / X-Kagi-Trace

@@ -20,15 +20,23 @@
       { "name": "RESEARCH_RUN", "class_name": "ResearchRun" },
       // Serializes the per-bearer rate counter and the monthly spend counter.
       // See docs/adr/0006-serialize-rate-and-spend-counters.md.
-      { "name": "METER", "class_name": "Meter" }
+      { "name": "METER", "class_name": "Meter" },
+      // Read-through result cache (L2) + single-flight. See
+      // docs/adr/0017-result-cache.md.
+      { "name": "RESULT_CACHE", "class_name": "ResultCache" }
     ]
   },
 
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["KagiMcpAgent"] },
     { "tag": "v2", "new_sqlite_classes": ["ResearchRun"] },
-    { "tag": "v3", "new_sqlite_classes": ["Meter"] }
+    { "tag": "v3", "new_sqlite_classes": ["Meter"] },
+    { "tag": "v4", "new_sqlite_classes": ["ResultCache"] }
   ],
+
+  // Hourly purge of expired result-cache entries (ADR 0017): Kagi results
+  // stay transient.
+  "triggers": { "crons": ["0 * * * *"] },
 
   "kv_namespaces": [
     {

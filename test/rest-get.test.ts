@@ -60,6 +60,9 @@ describe("GET /search — validation", () => {
     ["?q=x&limit=0", "invalid-limit"],
     ["?q=x&limit=51", "invalid-limit"],
     ["?q=x&limit=2.5", "invalid-limit"],
+    ["?q=x&max_age_s=-1", "invalid-max-age"],
+    ["?q=x&max_age_s=abc", "invalid-max-age"],
+    ["?q=x&max_age_s=", "invalid-max-age"],
   ])("%s -> 400 %s", async (qs, code) => {
     const res = await handleSearchGet(get(qs), makeEnv());
     expect(res.status).toBe(400);
@@ -110,6 +113,18 @@ describe("GET /search — SearXNG shape", () => {
     expect(body.results).toEqual([]);
     expect(body.answers).toEqual([]);
     expect(body.suggestions).toEqual([]);
+  });
+
+  it("passes max_age_s through, so ?max_age_s=0 skips the result cache", async () => {
+    const search = vi.fn().mockResolvedValue(RESPONSE);
+    createKagiClient.mockReturnValue({ mode: "scrape", search });
+
+    const res = await handleSearchGet(get("?q=x&max_age_s=0"), makeEnv(), {
+      waitUntil: vi.fn(),
+    } as never);
+
+    expect(res.status).toBe(200);
+    expect(search).toHaveBeenCalledWith({ q: "x", limit: 10, max_age_s: 0 });
   });
 
   it("maps an upstream failure through the shared error vocabulary", async () => {
