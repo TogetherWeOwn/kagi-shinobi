@@ -1,4 +1,4 @@
-// Read-through result cache (ADR 0016): the ResultCache Durable Object, the
+// Read-through result cache (ADR 0017): the ResultCache Durable Object, the
 // ReadThroughCache in front of it, and the KagiClient facade wired through it.
 //
 // Runs in workerd against the real DO and the real caches.default. DO SQL

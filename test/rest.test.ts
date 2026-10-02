@@ -206,7 +206,7 @@ describe("handleSearch input validation", () => {
     expect((await json(res)).error).toMatchObject({ code: "invalid-impl" });
   });
 
-  // ADR 0016: max_age_s bounds how old a cached result may be; 0 skips it.
+  // ADR 0017: max_age_s bounds how old a cached result may be; 0 skips it.
   it.each([0, 3600])("passes max_age_s=%i through to the client", async (max_age_s) => {
     const client = fakeClient();
     createKagiClient.mockReturnValue(client);

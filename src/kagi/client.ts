@@ -50,7 +50,7 @@ export interface SearchArgs {
    * `engine=kagi` — pairing it with another engine is a 400.
    */
   engine?: SearchEngine;
-  /** Oldest acceptable cached result, in seconds; 0 forces a fresh fetch. ADR 0016. */
+  /** Oldest acceptable cached result, in seconds; 0 forces a fresh fetch. ADR 0017. */
   max_age_s?: number;
 }
 
@@ -62,7 +62,7 @@ export interface SummarizeArgs {
   engine?: SummarizerEngine;
   confirm_muriel?: boolean;
   impl?: KagiImpl;
-  /** Oldest acceptable cached result, in seconds; 0 forces a fresh fetch. ADR 0016. */
+  /** Oldest acceptable cached result, in seconds; 0 forces a fresh fetch. ADR 0017. */
   max_age_s?: number;
 }
 
@@ -71,7 +71,7 @@ export interface FastGPTArgs {
   /** `false` also forces a fresh fetch past the result cache. */
   cache?: boolean;
   impl?: KagiImpl;
-  /** Oldest acceptable cached result, in seconds; 0 forces a fresh fetch. ADR 0016. */
+  /** Oldest acceptable cached result, in seconds; 0 forces a fresh fetch. ADR 0017. */
   max_age_s?: number;
 }
 
@@ -115,7 +115,7 @@ export class KagiClient {
 
   /**
    * Read-through: a cached result within TTL (and `max_age_s`) returns before
-   * any impl runs, so it makes no Kagi call and spends no budget. ADR 0016.
+   * any impl runs, so it makes no Kagi call and spends no budget. ADR 0017.
    */
   async search(args: SearchArgs): Promise<SearchResponse> {
     const engine = args.engine ?? "kagi";

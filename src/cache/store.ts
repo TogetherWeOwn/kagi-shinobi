@@ -11,7 +11,7 @@
 // synchronous end to end (like every Meter method — no `await` between read
 // and write), so exactly one caller is told "claimed" for a key; the rest are
 // told "pending" and poll until the winner stores. See
-// docs/adr/0016-result-cache.md.
+// docs/adr/0017-result-cache.md.
 
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../env.js";

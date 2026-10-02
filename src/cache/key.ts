@@ -2,9 +2,9 @@
 //
 // Nothing here imports `cloudflare:*`, so the unit project (plain Node) can
 // pin key derivation and normalization, and client.ts can import it without
-// dragging the Durable Object class into the Node loader. See ADR 0016.
+// dragging the Durable Object class into the Node loader. See ADR 0017.
 
-/** Cacheable domains. Everything else bypasses the cache — see ADR 0016. */
+/** Cacheable domains. Everything else bypasses the cache — see ADR 0017. */
 export type CacheDomain = "search" | "fastgpt" | "summarize";
 
 /** TTLs per the card: search 24h, fastgpt 6h, summarize 7d. */

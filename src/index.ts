@@ -96,7 +96,7 @@ export default {
   },
 
   // Hourly cron (wrangler.jsonc triggers): drop expired result-cache entries
-  // so Kagi results stay transient. ADR 0016.
+  // so Kagi results stay transient. ADR 0017.
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     const stub = resultCacheStub(env);
     if (stub) ctx.waitUntil(stub.purge(Date.now()));

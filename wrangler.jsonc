@@ -22,7 +22,7 @@
       // See docs/adr/0006-serialize-rate-and-spend-counters.md.
       { "name": "METER", "class_name": "Meter" },
       // Read-through result cache (L2) + single-flight. See
-      // docs/adr/0016-result-cache.md.
+      // docs/adr/0017-result-cache.md.
       { "name": "RESULT_CACHE", "class_name": "ResultCache" }
     ]
   },
@@ -34,7 +34,7 @@
     { "tag": "v4", "new_sqlite_classes": ["ResultCache"] }
   ],
 
-  // Hourly purge of expired result-cache entries (ADR 0016): Kagi results
+  // Hourly purge of expired result-cache entries (ADR 0017): Kagi results
   // stay transient.
   "triggers": { "crons": ["0 * * * *"] },
 

@@ -1,4 +1,4 @@
-// Result-cache keys (ADR 0016): `sha256(domain|engine|normalized args)`.
+// Result-cache keys (ADR 0017): `sha256(domain|engine|normalized args)`.
 //
 // Pure logic, so it runs in the Node project. What matters is that equal
 // queries share a key and different ones never do — a collision here would

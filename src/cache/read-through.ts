@@ -1,4 +1,4 @@
-// Read-through result cache in front of the KagiClient facade (ADR 0016).
+// Read-through result cache in front of the KagiClient facade (ADR 0017).
 //
 //   L1  Cache API (caches.default) — per-colo, free to read. Misses (or
 //       throws) on *.workers.dev and inside some contexts; any failure is an

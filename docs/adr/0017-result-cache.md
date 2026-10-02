@@ -1,4 +1,4 @@
-# ADR 0016 — Read-through result cache that works on workers.dev
+# ADR 0017 — Read-through result cache that works on workers.dev
 
 **Status:** Accepted — 2026-10-02
 **Relates to:** [ADR 0003](0003-canonical-response-shapes.md) (the `meta` contract

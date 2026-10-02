@@ -69,7 +69,7 @@ const SUMMARIZE_TEXT_DESCRIPTION =
 const ENGINE_ENUM = ["cecil", "agnes", "daphne", "muriel"] as const;
 
 // Result cache bound on the five cached tools (search, fastgpt, the three
-// summarizers). ADR 0016.
+// summarizers). ADR 0017.
 const maxAgeSchema = z
   .number()
   .int()

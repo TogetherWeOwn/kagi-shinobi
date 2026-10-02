@@ -75,7 +75,7 @@ async function readBudget(env: Env, uri: string): Promise<ResourceContent> {
   }
 }
 
-// ADR 0016: the hit rate the card's acceptance is measured by. Counters are
+// ADR 0017: the hit rate the card's acceptance is measured by. Counters are
 // cumulative — the hourly purge removes entries, never counts.
 async function readCacheStats(env: Env, uri: string): Promise<ResourceContent> {
   try {

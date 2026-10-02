@@ -927,7 +927,7 @@ describe("kagiErrorMcp", () => {
   });
 });
 
-// ADR 0016: the five cached tools accept max_age_s and forward it, and the
+// ADR 0017: the five cached tools accept max_age_s and forward it, and the
 // cache's background work rides the Durable Object's waitUntil.
 describe("result cache wiring", () => {
   it.each([
