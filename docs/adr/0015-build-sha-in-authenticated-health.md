@@ -1,4 +1,4 @@
-# ADR 0014 — Build SHA in authenticated /health
+# ADR 0015 — Build SHA in authenticated /health
 
 **Status:** Accepted — 2026-10-01
 **Relates to:** [TOG-11839](/TOG/issues/TOG-11839)

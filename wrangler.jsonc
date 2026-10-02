@@ -79,6 +79,12 @@
     // BUILD_SHA:<sha>`, see .github/workflows/deploy.yml) and echoed by
     // authenticated /health so a deployment can be matched to its commit.
     // Default "dev" — anything not deployed through that path.
-    "BUILD_SHA": "dev"
+    "BUILD_SHA": "dev",
+    // SearXNG fallback engine (ADR 0014). Empty = unconfigured: engine=auto
+    // behaves exactly as before (Kagi only) and engine=searxng refuses with
+    // not_configured. Set to the Tunnel hostname (or binding) of the rbx1
+    // instance — a hostname, never an IP. Pair with the SEARXNG_ACCESS_*
+    // secrets when the Tunnel sits behind Cloudflare Access.
+    "SEARXNG_BASE_URL": ""
   }
 }

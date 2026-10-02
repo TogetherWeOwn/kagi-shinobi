@@ -370,6 +370,22 @@ describe("kagi_search_fetch", () => {
 
     expect(text(result)).toContain("just a string");
   });
+
+  it("passes engine through to the facade", async () => {
+    const search = vi.fn().mockResolvedValue(searchResponse("q", []));
+
+    await call("kagi_search_fetch", { queries: ["q"], engine: "auto" }, "scrape", { search });
+
+    expect(search).toHaveBeenCalledWith(expect.objectContaining({ engine: "auto" }));
+  });
+
+  it("leaves engine undefined when omitted, so the facade defaults to kagi", async () => {
+    const search = vi.fn().mockResolvedValue(searchResponse("q", []));
+
+    await call("kagi_search_fetch", { queries: ["q"] }, "scrape", { search });
+
+    expect(search).toHaveBeenCalledWith(expect.objectContaining({ engine: undefined }));
+  });
 });
 
 describe("kagi_summarizer", () => {

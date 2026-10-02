@@ -11,7 +11,7 @@ import { KagiError, type KagiErrorDetail } from "./kagi/errors.js";
 import { KAGI_ERROR_STATUS, restErrorCode } from "./kagi/http.js";
 import { isSupportedLanguage } from "./kagi/languages.js";
 import { logWarn } from "./util/log.js";
-import type { SearchResponse } from "./kagi/types.js";
+import type { SearchEngine, SearchResponse } from "./kagi/types.js";
 
 /**
  * Ceiling on queries per request, because /search fans out to one upstream
@@ -29,6 +29,7 @@ interface SearchBody {
   queries?: unknown;
   limit?: unknown;
   impl?: unknown;
+  engine?: unknown;
 }
 
 interface SummarizeBody {
@@ -46,7 +47,7 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
     return jsonError(400, "invalid-json", "Body must be JSON");
   }
 
-  const { queries, limit, impl } = body;
+  const { queries, limit, impl, engine } = body;
   if (!Array.isArray(queries) || queries.length === 0) {
     return jsonError(400, "missing-queries", "Body needs { queries: string[] }");
   }
@@ -76,6 +77,13 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
   if (normImpl === "__invalid__") {
     return jsonError(400, "invalid-impl", "impl must be 'scrape' or 'api'");
   }
+  const normEngine = normalizeEngine(engine);
+  if (normEngine === "__invalid__") {
+    return jsonError(400, "invalid-engine", "engine must be 'kagi', 'searxng' or 'auto'");
+  }
+  if (normEngine !== undefined && normEngine !== "kagi" && normImpl !== undefined) {
+    return jsonError(400, "invalid-impl", "impl only applies under engine='kagi'");
+  }
 
   let client: KagiClient;
   try {
@@ -86,7 +94,10 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
 
   const settled = await Promise.allSettled(
     normQueries.map((q) =>
-      withTimeout(client.search({ q, limit: normLimit, impl: normImpl }), 15_000),
+      withTimeout(
+        client.search({ q, limit: normLimit, impl: normImpl, engine: normEngine }),
+        15_000,
+      ),
     ),
   );
 
@@ -166,6 +177,12 @@ export async function handleSummarize(request: Request, env: Env): Promise<Respo
 function normalizeImpl(v: unknown): "scrape" | "api" | undefined | "__invalid__" {
   if (v === undefined) return undefined;
   if (v === "scrape" || v === "api") return v;
+  return "__invalid__";
+}
+
+function normalizeEngine(v: unknown): SearchEngine | undefined | "__invalid__" {
+  if (v === undefined) return undefined;
+  if (v === "kagi" || v === "searxng" || v === "auto") return v;
   return "__invalid__";
 }
 

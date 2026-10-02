@@ -15,7 +15,7 @@ from stdio to Streamable HTTP).
 | Path | Method | Auth | Purpose |
 |---|---|---|---|
 | `/mcp` | POST/GET | Admin or client key | MCP Streamable HTTP transport (McpAgent) |
-| `/search` | POST `{queries, limit?}` | Admin or client key | Direct search — max 20 queries per request |
+| `/search` | POST `{queries, limit?, engine?}` | Admin or client key | Direct search — max 20 queries per request; `engine` is `kagi` (default), `searxng`, or `auto` |
 | `/search` | GET `?q=&format=json&limit=` | Admin or client key | One query, SearXNG-shaped `{results:[{url,title,content}]}` for `json_engine` |
 | `/summarize` | POST `{url, summary_type?, target_language?}` | Admin | Direct summarize |
 | `/admin/token` | POST `{token}` | Admin | Manually rotate session token |
@@ -65,7 +65,7 @@ queries costs N. When a window is full the worker answers `429` with
 
 ## MCP tools exposed
 
-- `kagi_search_fetch({ queries: string[], limit?: number })` — max 20 queries per call
+- `kagi_search_fetch({ queries: string[], limit?: number, engine?: "kagi"|"searxng"|"auto" })` — max 20 queries per call
 - `kagi_summarizer({ url: string, summary_type?: "summary"|"takeaway", target_language?: string })`
 
 Schemas match the upstream `kagi-ken-mcp` server so any client already
@@ -92,6 +92,31 @@ wrangler deploy
 
 For local dev, copy `.dev.vars.example` to `.dev.vars`, fill in values, then
 `npm run dev`.
+
+## SearXNG fallback engine
+
+Kagi scrape mode rides one personal subscription, so it must stay
+human-scale. SearXNG on rbx1 is free and unlimited but noisier — use it as the
+fallback tier via the `engine` param on `POST /search` and
+`kagi_search_fetch`: `kagi` (default, current behavior), `searxng` (straight
+to the fallback), or `auto` (Kagi while under budget and the session is
+healthy, otherwise SearXNG, with the switch recorded in `meta.warnings`).
+Results keep the same schema either way (`source_impl: "searxng"`).
+
+Setup (operator deployment work, through the gated deploy path):
+
+```powershell
+# 1. Point the worker at the rbx1 instance — a Tunnel hostname (or binding),
+#    never an IP, and never the Caddy /mcp-ext path
+#    (wrangler.jsonc var; empty = fallback unconfigured)
+#    "SEARXNG_BASE_URL": "https://searxng.<your-tunnel>.cfargotunnel.com"
+
+# 2. Only when the Tunnel sits behind Cloudflare Access:
+wrangler secret put SEARXNG_ACCESS_CLIENT_ID
+wrangler secret put SEARXNG_ACCESS_CLIENT_SECRET
+```
+
+See [ADR 0014](docs/adr/0014-searxng-fallback-engine.md).
 
 ## Client config
 

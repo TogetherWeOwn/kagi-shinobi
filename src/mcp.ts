@@ -385,16 +385,24 @@ export class KagiMcpAgent extends McpAgent<Env> {
             .enum(["scrape", "api"])
             .optional()
             .describe(
-              "Override which implementation handles this call. Ignored in single-impl modes.",
+              "Override which implementation handles this call. Ignored in single-impl modes. Only applies under engine='kagi'.",
+            ),
+          engine: z
+            .enum(["kagi", "searxng", "auto"])
+            .optional()
+            .describe(
+              "Which engine serves the query: 'kagi' (default, tri-mode dispatcher), " +
+                "'searxng' (free SearXNG fallback, noisier), or 'auto' (Kagi while " +
+                "under budget and the session is healthy, otherwise SearXNG).",
             ),
           response_format: responseFormatSchema,
         },
         outputSchema: searchOutputSchema,
       },
-      async ({ queries, limit, impl, response_format }) => {
+      async ({ queries, limit, impl, engine, response_format }) => {
         const cap = limit ?? 10;
         const settled = await Promise.allSettled(
-          queries.map((q) => client.search({ q, limit: cap, impl })),
+          queries.map((q) => client.search({ q, limit: cap, impl, engine })),
         );
 
         const perQuery: (SearchResponse | null)[] = [];
