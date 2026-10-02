@@ -19,3 +19,4 @@ than quietly rewritten.
 | [0010](0010-one-mcp-error-envelope.md) | One error envelope for every MCP tool | accepted | 2026-08-07 |
 | [0011](0011-an-e2e-layer-that-only-tests-what-in-process-tests-cannot.md) | An E2E layer that only tests what in-process tests cannot | accepted | 2026-08-07 |
 | [0012](0012-one-error-vocabulary-two-envelopes.md) | One error vocabulary, two envelopes | accepted | 2026-08-07 |
+| [0013](0013-scrape-markup-change-loud-failure.md) | Fail loudly when Kagi's search markup moves | accepted | 2026-10-01 |

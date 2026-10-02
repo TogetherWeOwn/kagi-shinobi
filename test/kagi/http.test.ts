@@ -46,6 +46,7 @@ describe("KAGI_ERROR_STATUS", () => {
     ["auth", 401],
     ["captcha", 503],
     ["parse", 502],
+    ["markup_changed", 502],
     ["upstream", 502],
     ["rate_limit", 429],
     ["budget_exceeded", 402],

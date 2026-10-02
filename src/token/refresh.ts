@@ -13,6 +13,7 @@
 
 import puppeteer from "@cloudflare/puppeteer";
 import type { Env } from "../env.js";
+import { CHROME_UA } from "../kagi/headers.js";
 import { logInfo, logWarn } from "../util/log.js";
 import { saveToken } from "./store.js";
 
@@ -112,10 +113,9 @@ async function doRefresh(env: Env, opts: RefreshOptions): Promise<RefreshResult>
     const page = await browser.newPage();
 
     // Match the Chrome header stack we use for API calls, so the login flow
-    // fingerprints identically to normal browsing.
-    await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    );
+    // fingerprints identically to normal browsing. Reuses CHROME_UA rather
+    // than a second literal so the fingerprint cannot drift across call sites.
+    await page.setUserAgent(CHROME_UA);
     await page.setExtraHTTPHeaders({
       "Accept-Language": "en-US,en;q=0.9",
     });

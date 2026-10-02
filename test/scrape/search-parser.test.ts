@@ -1,7 +1,19 @@
-// Parser correctness against a recorded fixture. Runs hermetic — no network.
+// Parser correctness against recorded fixtures. Runs hermetic — no network.
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parseSearchResults } from "../../src/kagi/search";
+import { KagiMarkupChangedError, KagiParseError } from "../../src/kagi/errors";
 import { scrapeSearchToCanonical } from "../../src/kagi/normalize";
+
+// String paths rather than `new URL(...)`: the global URL type here is the
+// Workers one, which node's readFileSync overloads reject at typecheck.
+const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), "../fixtures/search");
+
+function fixture(name: string): string {
+  return readFileSync(join(FIXTURE_DIR, name), "utf8");
+}
 
 const FIXTURE = `<!doctype html>
 <html>
@@ -65,6 +77,64 @@ describe("parseSearchResults", () => {
   it("returns empty results on markup with no matches", () => {
     const items = parseSearchResults(`<html><body>nothing</body></html>`, 10);
     expect(items.length).toBe(0);
+  });
+});
+
+describe("parseSearchResults recorded fixtures", () => {
+  it("parses all six hits from the news-heavy fixture", () => {
+    const items = parseSearchResults(fixture("news-heavy.html"), 10);
+    const results = items.filter((i) => i.t === 0);
+    expect(results.length).toBe(6);
+    expect(results[0]).toMatchObject({
+      t: 0,
+      url: "https://news.example.com/2026/10/01/launch",
+    });
+  });
+
+  it("parses grouped hits alongside top-level ones", () => {
+    const items = parseSearchResults(fixture("grouped-results.html"), 10);
+    const results = items.filter((i) => i.t === 0);
+    expect(results.length).toBe(5);
+    expect(results.map((r) => r.t === 0 && r.url)).toContain(
+      "https://forum.example.io/t/11",
+    );
+  });
+
+  it("returns [] for a genuine zero-results page", () => {
+    const items = parseSearchResults(fixture("zero-results.html"), 10);
+    expect(items).toEqual([]);
+  });
+
+  it("throws markup_changed when selectors are stripped from a results page", () => {
+    // The acceptance case: Kagi renames every selector, but the results-page
+    // chrome (container, load-more button) survives. That is breakage, not an
+    // empty search — it must fail loudly.
+    const renamed = fixture("news-heavy.html")
+      .replaceAll("search-result", "renamed-result")
+      .replaceAll("_0_main-search-results", "_0_renamed-container")
+      .replaceAll("__sri_title_link", "__renamed-link")
+      .replaceAll("__sri-desc", "__renamed-desc")
+      .replaceAll("related-searches", "renamed-related");
+
+    expect(() => parseSearchResults(renamed, 10)).toThrowError(KagiMarkupChangedError);
+    try {
+      parseSearchResults(renamed, 10);
+    } catch (e) {
+      expect(e).toBeInstanceOf(KagiParseError);
+      expect((e as KagiMarkupChangedError).kind).toBe("markup_changed");
+    }
+  });
+
+  it("throws markup_changed when blocks survive but yield no title+url", () => {
+    // Only the inner selectors renamed: `.search-result` and `.sr-group`
+    // blocks exist but produce nothing. The block markers trip the guard.
+    // (Both renames matter — the fixture's grouped hit would otherwise still
+    // parse and the count would be 1, not 0.)
+    const renamed = fixture("basic-results.html")
+      .replaceAll("__sri_title_link", "__renamed-link")
+      .replaceAll("__srgi-title", "__renamed-gtitle");
+
+    expect(() => parseSearchResults(renamed, 10)).toThrowError(KagiMarkupChangedError);
   });
 });
 

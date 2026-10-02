@@ -4,6 +4,7 @@ import {
   KagiBudgetExceededError,
   KagiConfirmRequiredError,
   KagiError,
+  KagiMarkupChangedError,
   KagiParseError,
   KagiRateLimitError,
   KagiUnsupportedInModeError,
@@ -56,6 +57,15 @@ describe("KagiError taxonomy", () => {
   it("KagiParseError.kind === 'parse'", () => {
     const e = new KagiParseError("bad markup");
     expect(e.kind).toBe("parse");
+  });
+
+  it("KagiMarkupChangedError is a KagiParseError with kind 'markup_changed'", () => {
+    // A subclass, not a sibling: existing `instanceof KagiParseError` guards
+    // keep catching it, while the kind routes "fix the parser" separately.
+    const e = new KagiMarkupChangedError("markup moved");
+    expect(e).toBeInstanceOf(KagiError);
+    expect(e).toBeInstanceOf(KagiParseError);
+    expect(e.kind).toBe("markup_changed");
   });
 
   it("all subclasses are catchable as KagiError", () => {
