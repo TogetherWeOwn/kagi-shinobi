@@ -6,7 +6,7 @@
 
 import type { Env } from "./env.js";
 import { jsonError, jsonOk } from "./util/errors.js";
-import { createKagiClient, type KagiClient } from "./kagi/client.js";
+import { createKagiClient, type KagiClient, type KagiClientOptions } from "./kagi/client.js";
 import { KagiError, type KagiErrorDetail } from "./kagi/errors.js";
 import { KAGI_ERROR_STATUS, restErrorCode } from "./kagi/http.js";
 import { isSupportedLanguage } from "./kagi/languages.js";
@@ -30,6 +30,7 @@ interface SearchBody {
   limit?: unknown;
   impl?: unknown;
   engine?: unknown;
+  max_age_s?: unknown;
 }
 
 interface SummarizeBody {
@@ -37,9 +38,16 @@ interface SummarizeBody {
   summary_type?: unknown;
   target_language?: unknown;
   impl?: unknown;
+  max_age_s?: unknown;
 }
 
-export async function handleSearch(request: Request, env: Env): Promise<Response> {
+const INVALID_MAX_AGE = "max_age_s must be a non-negative integer (seconds; 0 skips the cache)";
+
+export async function handleSearch(
+  request: Request,
+  env: Env,
+  ctx?: ExecutionContext,
+): Promise<Response> {
   let body: SearchBody;
   try {
     body = (await request.json()) as SearchBody;
@@ -47,7 +55,7 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
     return jsonError(400, "invalid-json", "Body must be JSON");
   }
 
-  const { queries, limit, impl, engine } = body;
+  const { queries, limit, impl, engine, max_age_s } = body;
   if (!Array.isArray(queries) || queries.length === 0) {
     return jsonError(400, "missing-queries", "Body needs { queries: string[] }");
   }
@@ -84,10 +92,14 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
   if (normEngine !== undefined && normEngine !== "kagi" && normImpl !== undefined) {
     return jsonError(400, "invalid-impl", "impl only applies under engine='kagi'");
   }
+  const maxAgeS = normalizeMaxAge(max_age_s);
+  if (maxAgeS === "__invalid__") {
+    return jsonError(400, "invalid-max-age", INVALID_MAX_AGE);
+  }
 
   let client: KagiClient;
   try {
-    client = createKagiClient(env);
+    client = createKagiClient(env, clientOptions(ctx));
   } catch (err) {
     return kagiErrorResponse(err);
   }
@@ -95,7 +107,13 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
   const settled = await Promise.allSettled(
     normQueries.map((q) =>
       withTimeout(
-        client.search({ q, limit: normLimit, impl: normImpl, engine: normEngine }),
+        client.search({
+          q,
+          limit: normLimit,
+          impl: normImpl,
+          engine: normEngine,
+          max_age_s: maxAgeS,
+        }),
         15_000,
       ),
     ),
@@ -122,7 +140,11 @@ export async function handleSearch(request: Request, env: Env): Promise<Response
   return jsonOk({ mode: client.mode, results });
 }
 
-export async function handleSummarize(request: Request, env: Env): Promise<Response> {
+export async function handleSummarize(
+  request: Request,
+  env: Env,
+  ctx?: ExecutionContext,
+): Promise<Response> {
   let body: SummarizeBody;
   try {
     body = (await request.json()) as SummarizeBody;
@@ -130,7 +152,7 @@ export async function handleSummarize(request: Request, env: Env): Promise<Respo
     return jsonError(400, "invalid-json", "Body must be JSON");
   }
 
-  const { url, summary_type, target_language, impl } = body;
+  const { url, summary_type, target_language, impl, max_age_s } = body;
   if (typeof url !== "string" || url.trim().length === 0) {
     return jsonError(400, "missing-url", "Body needs { url: string }");
   }
@@ -152,10 +174,14 @@ export async function handleSummarize(request: Request, env: Env): Promise<Respo
   if (normImpl === "__invalid__") {
     return jsonError(400, "invalid-impl", "impl must be 'scrape' or 'api'");
   }
+  const maxAgeS = normalizeMaxAge(max_age_s);
+  if (maxAgeS === "__invalid__") {
+    return jsonError(400, "invalid-max-age", INVALID_MAX_AGE);
+  }
 
   let client: KagiClient;
   try {
-    client = createKagiClient(env);
+    client = createKagiClient(env, clientOptions(ctx));
   } catch (err) {
     return kagiErrorResponse(err);
   }
@@ -167,6 +193,7 @@ export async function handleSummarize(request: Request, env: Env): Promise<Respo
       language,
       style: type,
       impl: normImpl,
+      max_age_s: maxAgeS,
     });
     return jsonOk({ ok: true, mode: client.mode, data });
   } catch (err) {
@@ -178,6 +205,17 @@ function normalizeImpl(v: unknown): "scrape" | "api" | undefined | "__invalid__"
   if (v === undefined) return undefined;
   if (v === "scrape" || v === "api") return v;
   return "__invalid__";
+}
+
+function normalizeMaxAge(v: unknown): number | undefined | "__invalid__" {
+  if (v === undefined) return undefined;
+  if (typeof v === "number" && Number.isInteger(v) && v >= 0) return v;
+  return "__invalid__";
+}
+
+/** Hand the cache's post-response work (L1 writes) to the request's waitUntil. */
+function clientOptions(ctx: ExecutionContext | undefined): KagiClientOptions {
+  return ctx ? { waitUntil: (p) => ctx.waitUntil(p) } : {};
 }
 
 function normalizeEngine(v: unknown): SearchEngine | undefined | "__invalid__" {
@@ -251,7 +289,11 @@ function retryAfterHeader(detail: KagiErrorDetail): Record<string, string> | und
  * content_query=content). Shape only; no new upstream behaviour — it calls
  * the same client.search as POST /search with a single query. ADR 0013.
  */
-export async function handleSearchGet(request: Request, env: Env): Promise<Response> {
+export async function handleSearchGet(
+  request: Request,
+  env: Env,
+  ctx?: ExecutionContext,
+): Promise<Response> {
   const params = new URL(request.url).searchParams;
   const q = (params.get("q") ?? "").trim();
   if (q.length === 0) {
@@ -273,17 +315,26 @@ export async function handleSearchGet(request: Request, env: Env): Promise<Respo
     }
     limit = n;
   }
+  let maxAgeS: number | undefined;
+  const rawMaxAge = params.get("max_age_s");
+  if (rawMaxAge !== null) {
+    const n = rawMaxAge.trim() === "" ? NaN : Number(rawMaxAge);
+    if (!Number.isInteger(n) || n < 0) {
+      return jsonError(400, "invalid-max-age", INVALID_MAX_AGE);
+    }
+    maxAgeS = n;
+  }
 
   let client: KagiClient;
   try {
-    client = createKagiClient(env);
+    client = createKagiClient(env, clientOptions(ctx));
   } catch (err) {
     return kagiErrorResponse(err);
   }
 
   let data: SearchResponse;
   try {
-    data = await withTimeout(client.search({ q, limit }), 15_000);
+    data = await withTimeout(client.search({ q, limit, max_age_s: maxAgeS }), 15_000);
   } catch (err) {
     return kagiErrorResponse(err);
   }

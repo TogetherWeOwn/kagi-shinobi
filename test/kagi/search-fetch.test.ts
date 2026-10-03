@@ -6,6 +6,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { search } from "../../src/kagi/search";
 import { KagiAuthError, KagiUpstreamError } from "../../src/kagi/errors";
+import { CHROME_VERSION } from "../../src/kagi/headers";
 import { restoreFetch, stubFetch } from "../_helpers";
 
 afterEach(() => {
@@ -98,7 +99,7 @@ describe("search request shape", () => {
     expect(seen.headers?.["Sec-Fetch-Site"]).toBe("none");
     expect(seen.headers?.["Sec-Fetch-User"]).toBe("?1");
     expect(seen.headers?.["Upgrade-Insecure-Requests"]).toBe("1");
-    expect(seen.headers?.["User-Agent"]).toContain("Chrome/131");
+    expect(seen.headers?.["User-Agent"]).toContain(`Chrome/${CHROME_VERSION}`);
   });
 });
 

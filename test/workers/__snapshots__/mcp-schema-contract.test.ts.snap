@@ -149,6 +149,12 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
           ],
           "type": "string",
         },
+        "max_age_s": {
+          "description": "Oldest acceptable cached result, in seconds (default: the cache TTL — search 24h, fastgpt 6h, summaries 7d). 0 skips the cache and fetches fresh.",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer",
+        },
         "query": {
           "description": "The question to answer.",
           "minLength": 1,
@@ -331,6 +337,12 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
           "minimum": 1,
           "type": "integer",
         },
+        "max_age_s": {
+          "description": "Oldest acceptable cached result, in seconds (default: the cache TTL — search 24h, fastgpt 6h, summaries 7d). 0 skips the cache and fetches fresh.",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer",
+        },
         "queries": {
           "description": "One or more concise, keyword-focused search queries (max 20 per call). Include essential context within each query for standalone use.",
           "items": {
@@ -394,6 +406,9 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
                   "meta": {
                     "additionalProperties": false,
                     "properties": {
+                      "cache_age_s": {
+                        "type": "number",
+                      },
                       "cache_hit": {
                         "type": "boolean",
                       },
@@ -495,6 +510,9 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
                   "meta": {
                     "additionalProperties": false,
                     "properties": {
+                      "cache_age_s": {
+                        "type": "number",
+                      },
                       "cache_hit": {
                         "type": "boolean",
                       },
@@ -654,6 +672,12 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
             "muriel",
           ],
           "type": "string",
+        },
+        "max_age_s": {
+          "description": "Oldest acceptable cached result, in seconds (default: the cache TTL — search 24h, fastgpt 6h, summaries 7d). 0 skips the cache and fetches fresh.",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer",
         },
         "summary_type": {
           "default": "summary",
@@ -707,6 +731,12 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
           ],
           "type": "string",
         },
+        "max_age_s": {
+          "description": "Oldest acceptable cached result, in seconds (default: the cache TTL — search 24h, fastgpt 6h, summaries 7d). 0 skips the cache and fetches fresh.",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer",
+        },
         "summary_type": {
           "default": "summary",
           "enum": [
@@ -741,6 +771,12 @@ exports[`advertised tool schemas > match the recorded wire contract in api mode 
             "api",
           ],
           "type": "string",
+        },
+        "max_age_s": {
+          "description": "Oldest acceptable cached result, in seconds (default: the cache TTL — search 24h, fastgpt 6h, summaries 7d). 0 skips the cache and fetches fresh.",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer",
         },
         "summary_type": {
           "default": "summary",
@@ -788,6 +824,12 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
             "api",
           ],
           "type": "string",
+        },
+        "max_age_s": {
+          "description": "Oldest acceptable cached result, in seconds (default: the cache TTL — search 24h, fastgpt 6h, summaries 7d). 0 skips the cache and fetches fresh.",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer",
         },
         "query": {
           "description": "The question to answer.",
@@ -971,6 +1013,12 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
           "minimum": 1,
           "type": "integer",
         },
+        "max_age_s": {
+          "description": "Oldest acceptable cached result, in seconds (default: the cache TTL — search 24h, fastgpt 6h, summaries 7d). 0 skips the cache and fetches fresh.",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer",
+        },
         "queries": {
           "description": "One or more concise, keyword-focused search queries (max 20 per call). Include essential context within each query for standalone use.",
           "items": {
@@ -1034,6 +1082,9 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
                   "meta": {
                     "additionalProperties": false,
                     "properties": {
+                      "cache_age_s": {
+                        "type": "number",
+                      },
                       "cache_hit": {
                         "type": "boolean",
                       },
@@ -1135,6 +1186,9 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
                   "meta": {
                     "additionalProperties": false,
                     "properties": {
+                      "cache_age_s": {
+                        "type": "number",
+                      },
                       "cache_hit": {
                         "type": "boolean",
                       },
@@ -1303,6 +1357,12 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
           ],
           "type": "string",
         },
+        "max_age_s": {
+          "description": "Oldest acceptable cached result, in seconds (default: the cache TTL — search 24h, fastgpt 6h, summaries 7d). 0 skips the cache and fetches fresh.",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer",
+        },
         "summary_type": {
           "default": "summary",
           "enum": [
@@ -1337,6 +1397,12 @@ exports[`advertised tool schemas > match the recorded wire contract in scrape mo
             "api",
           ],
           "type": "string",
+        },
+        "max_age_s": {
+          "description": "Oldest acceptable cached result, in seconds (default: the cache TTL — search 24h, fastgpt 6h, summaries 7d). 0 skips the cache and fetches fresh.",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer",
         },
         "summary_type": {
           "default": "summary",

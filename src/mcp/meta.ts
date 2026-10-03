@@ -7,6 +7,7 @@ export interface MetaInit {
   impl: ImplKind;
   start_ms: number;
   cache_hit?: boolean;
+  cache_age_s?: number;
   cost_cents?: number;
   trace_id?: string;
   session_stale?: boolean;
@@ -20,6 +21,7 @@ export function buildMeta(init: MetaInit): MetaBlock {
     cache_hit: init.cache_hit ?? false,
     elapsed_ms: Math.max(0, Date.now() - init.start_ms),
   };
+  if (init.cache_age_s !== undefined) meta.cache_age_s = init.cache_age_s;
   if (init.cost_cents !== undefined) meta.cost_cents = init.cost_cents;
   if (init.trace_id) meta.trace_id = init.trace_id;
   if (init.session_stale !== undefined) meta.session_stale = init.session_stale;

@@ -1,4 +1,4 @@
-// MCP resources — the three read-only URIs an MCP client can browse.
+// MCP resources — the four read-only URIs an MCP client can browse.
 //
 // registerResources takes an McpServer and hands it closures; the readers
 // themselves are module-private. So the server is faked here purely to capture
@@ -70,12 +70,13 @@ afterEach(() => {
 });
 
 describe("registerResources", () => {
-  it("registers the three browsable URIs as JSON", () => {
+  it("registers the four browsable URIs as JSON", () => {
     const registered = captureRegistrations();
 
     expect([...registered.keys()].sort()).toEqual([
       "kagi_api_status",
       "kagi_budget",
+      "kagi_cache_stats",
       "kagi_smallweb_recent",
     ]);
     for (const [, entry] of registered) {
@@ -90,6 +91,7 @@ describe("registerResources", () => {
     expect(registered.get("kagi_budget")?.uri).toBe("kagi://budget");
     expect(registered.get("kagi_api_status")?.uri).toBe("kagi://api-status");
     expect(registered.get("kagi_smallweb_recent")?.uri).toBe("kagi://smallweb/recent");
+    expect(registered.get("kagi_cache_stats")?.uri).toBe("kagi://cache-stats");
   });
 
   it("echoes the requested uri back in the content envelope", async () => {
@@ -127,6 +129,38 @@ describe("kagi://budget", () => {
     };
 
     const body = await read("kagi_budget", { METER: brokenMeter });
+
+    expect(body.error).toMatch(/unreachable/);
+  });
+});
+
+describe("kagi://cache-stats", () => {
+  it("reports the result cache's counters and hit rate", async () => {
+    const body = await read("kagi_cache_stats");
+
+    for (const field of ["hits", "misses", "stores", "entries", "hit_rate"]) {
+      expect(typeof body[field]).toBe("number");
+    }
+    expect(Object.keys(body.by_domain as object).sort()).toEqual(["fastgpt", "search", "summarize"]);
+  });
+
+  it("degrades to an error payload when the cache binding is absent", async () => {
+    const body = await read("kagi_cache_stats", { RESULT_CACHE: undefined });
+
+    expect(body.error).toMatch(/RESULT_CACHE binding not configured/);
+  });
+
+  it("degrades to an error payload when the cache is unreachable", async () => {
+    const brokenCache = {
+      idFromName: (name: string) => name,
+      get: () => ({
+        stats: async () => {
+          throw new Error("Durable Object unreachable");
+        },
+      }),
+    };
+
+    const body = await read("kagi_cache_stats", { RESULT_CACHE: brokenCache });
 
     expect(body.error).toMatch(/unreachable/);
   });

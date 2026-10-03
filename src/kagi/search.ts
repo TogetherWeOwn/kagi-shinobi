@@ -3,7 +3,12 @@
 import * as cheerio from "cheerio";
 import type { AnyNode } from "domhandler";
 import { chromeHeaders } from "./headers.js";
-import { KagiAuthError, KagiParseError, KagiUpstreamError } from "./errors.js";
+import {
+  KagiAuthError,
+  KagiMarkupChangedError,
+  KagiParseError,
+  KagiUpstreamError,
+} from "./errors.js";
 
 export interface SearchResultItem {
   t: 0;
@@ -87,13 +92,47 @@ export function parseSearchResults(html: string, limit: number): SearchDataItem[
 
     const related = extractRelatedSearches($);
     if (related.length > 0) results.push({ t: 1, list: related });
-
-    return results;
   } catch {
     throw new KagiParseError(
       "Failed to parse search results — unexpected HTML structure",
     );
   }
+
+  // Fail loudly on a markup change. A 200 page carrying results-page chrome
+  // that yields zero parsed results means Kagi renamed or restructured its
+  // markup — returning [] would report breakage as a successful empty search.
+  // A genuine zero-results page carries an explicit no-results marker instead
+  // and parses to [] as before; bare HTML with neither (unit probes, error
+  // pages) keeps the old [] behavior. See ADR 0016.
+  if (count === 0 && !hasNoResultsMarker($) && hasResultsPageMarkers($)) {
+    throw new KagiMarkupChangedError(
+      "Search page carried results-page markup but yielded 0 results — Kagi markup changed",
+    );
+  }
+
+  return results;
+}
+
+// Page-level chrome identifying an /html/search results page, independent of
+// the per-result selectors above. `.search-result` itself is included: blocks
+// that exist but yield no title+url (inner selectors renamed) are breakage,
+// not emptiness. Any one surviving marker trips the guard.
+function hasResultsPageMarkers($: cheerio.CheerioAPI): boolean {
+  return (
+    $(
+      "._0_main-search-results, #_0_main-search-results, " +
+        ".search-result, .sr-group, .related-searches, #load_more_results",
+    ).length > 0
+  );
+}
+
+// Explicit "no results for this query" signal. Takes precedence over the
+// container markers: a genuine zero-results page still carries results chrome.
+function hasNoResultsMarker($: cheerio.CheerioAPI): boolean {
+  if ($(".no-results, .zero-results, #no-results, .no_results").length > 0) {
+    return true;
+  }
+  return /no results( found)? for|nothing found|0 results/i.test($("body").text());
 }
 
 function extractSearchResult(
