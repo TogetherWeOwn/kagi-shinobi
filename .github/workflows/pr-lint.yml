@@ -1,4 +1,4 @@
-name: PR lint
+name: pr-lint
 
 # Org convention for every change that lands on main (TogetherWeOwn GitHub standard):
 #   * PR title = Conventional Commits header: `type(scope): summary`, <= 100 chars, no trailing period.
@@ -12,6 +12,14 @@ name: PR lint
 #     main is one conventional commit per PR. The push run flags any commit that bypasses it
 #     (for example a merge call that passes its own commit_title).
 #   * Dependabot PRs and release-please PRs are exempt from the body checks.
+#
+# Always runs on PRs (CI standard TOG-14877). Deliberately no `paths:` filter: this workflow
+# produces a required check, and a workflow-level filter would leave the check unreported
+# instead of green.
+#
+# The job is still called `title`: the main ruleset requires the status context `title`
+# (ci-ok + title + gitleaks), so renaming the job would leave that check unreported and block
+# every PR. Rename the job only together with a ruleset change.
 
 on:
   pull_request:
@@ -33,8 +41,7 @@ env:
   PR_STANDARDS_MODE: "warn"
 
 jobs:
-  pr-lint:
-    name: pr-lint
+  title:
     # Private repo: GitHub-hosted minutes are billed, so this runs on the org's
     # self-hosted runners, the same labels as ci.yml. Sparse checkout + python only.
     runs-on: [self-hosted, two-selfhosted]
