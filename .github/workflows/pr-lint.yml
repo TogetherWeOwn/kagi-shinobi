@@ -1,40 +1,61 @@
-name: pr-lint
+name: PR lint
 
-# Always runs on PRs (CI standard TOG-14877). Deliberately no `paths:`
-# filter: this workflow produces a required check, and a workflow-level
-# filter would leave the check unreported instead of green.
+# Org convention for every change that lands on main (TogetherWeOwn GitHub standard):
+#   * PR title = Conventional Commits header: `type(scope): summary`, <= 100 chars, no trailing period.
+#     Types: feat fix perf refactor test docs build ci chore revert style security.
+#     Put the card ID in the body (`Refs: TOG-1234`), not in the title.
+#   * PR body follows .github/pull_request_template.md (Thinking Path, Linked Issues or Issue
+#     Description, What Changed, Verification, Risks, Model Used). The checks live in
+#     .github/scripts/pr_standards.py with their tests next to it; this job runs both.
+#   * This repo is private, so a `Refs: TOG-1234` card reference is required in the body.
+#   * Repos are squash-merge only and the squash commit title is the PR title, so the history on
+#     main is one conventional commit per PR. The push run flags any commit that bypasses it
+#     (for example a merge call that passes its own commit_title).
+#   * Dependabot PRs and release-please PRs are exempt from the body checks.
+
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
+concurrency:
+  group: pr-lint-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  REQUIRE_CARD_REF: "true"
+  # "warn" while open PRs migrate to the template, then "error". Title format, an empty body and
+  # a missing card reference on this private repo are errors in both modes.
+  PR_STANDARDS_MODE: "warn"
+
 jobs:
-  title:
-    # Private repo: GitHub-hosted minutes are billed, so CI runs on the org's
-    # self-hosted runners instead.
+  pr-lint:
+    name: pr-lint
+    # Private repo: GitHub-hosted minutes are billed, so this runs on the org's
+    # self-hosted runners, the same labels as ci.yml. Sparse checkout + python only.
     runs-on: [self-hosted, two-selfhosted]
     timeout-minutes: 5
     steps:
-      # Zero-dependency title check — no third-party action. Enforces the
-      # repo's Conventional Commits header rule: `type(scope): summary`,
-      # at most 100 characters, no trailing period.
-      - name: Lint PR title
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github
+          sparse-checkout-cone-mode: true
+
+      - name: Unit-test the lint
+        run: python3 -m unittest discover -s .github/scripts -p 'test_pr_standards.py'
+
+      - name: Check title, body and commits
         env:
+          EVENT: ${{ github.event_name }}
           TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          set -euo pipefail
-          if [ "${#TITLE}" -gt 100 ]; then
-            echo "PR title exceeds 100 characters: $TITLE" >&2
-            exit 1
-          fi
-          if ! printf '%s' "$TITLE" | grep -Eq '^(feat|fix|perf|refactor|test|docs|build|ci|chore|revert|style|security)(\([^)]+\))?!?: [^ ].+'; then
-            echo "PR title must be 'type(scope): summary', e.g. 'fix(auth): refuse expired sudo sessions'" >&2
-            echo "got: $TITLE" >&2
-            exit 1
-          fi
-          case "$TITLE" in
-            *.) echo "PR title must not end with a period" >&2; exit 1 ;;
-          esac
-          echo "title OK: $TITLE"
+          BODY: ${{ github.event.pull_request.body }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          REPO_PRIVATE: ${{ github.event.repository.private }}
+          COMMITS: ${{ toJSON(github.event.commits) }}
+        run: python3 .github/scripts/pr_standards.py
