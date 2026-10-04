@@ -1,0 +1,40 @@
+name: pr-lint
+
+# Always runs on PRs (CI standard TOG-14877). Deliberately no `paths:`
+# filter: this workflow produces a required check, and a workflow-level
+# filter would leave the check unreported instead of green.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  title:
+    # Private repo: GitHub-hosted minutes are billed, so CI runs on the org's
+    # self-hosted runners instead.
+    runs-on: [self-hosted, two-selfhosted]
+    timeout-minutes: 5
+    steps:
+      # Zero-dependency title check — no third-party action. Enforces the
+      # repo's Conventional Commits header rule: `type(scope): summary`,
+      # at most 100 characters, no trailing period.
+      - name: Lint PR title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          if [ "${#TITLE}" -gt 100 ]; then
+            echo "PR title exceeds 100 characters: $TITLE" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$TITLE" | grep -Eq '^(feat|fix|perf|refactor|test|docs|build|ci|chore|revert|style|security)(\([^)]+\))?!?: [^ ].+'; then
+            echo "PR title must be 'type(scope): summary', e.g. 'fix(auth): refuse expired sudo sessions'" >&2
+            echo "got: $TITLE" >&2
+            exit 1
+          fi
+          case "$TITLE" in
+            *.) echo "PR title must not end with a period" >&2; exit 1 ;;
+          esac
+          echo "title OK: $TITLE"
