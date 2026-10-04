@@ -160,3 +160,5 @@ to pay for Browser Rendering — you'll rotate tokens manually via
 
 MIT. Upstream `kagi-ken` and `kagi-ken-mcp` are also MIT — see `src/kagi/*`
 for attribution headers on ported files.
+
+<!-- CI probe for TOG-14899 verification (1): docs-only change, closes unmerged -->
