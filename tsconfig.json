@@ -24,6 +24,7 @@
   },
   "include": [
     "src/**/*.ts",
+    "ci/**/*.ts",
     "test/**/*.ts",
     "playwright.config.ts",
     "worker-configuration.d.ts"

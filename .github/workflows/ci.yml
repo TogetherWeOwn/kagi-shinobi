@@ -62,7 +62,7 @@ jobs:
           code=false; deps=false; ci=false
           while IFS= read -r f; do
             case "$f" in
-              src/*|test/*|wrangler.jsonc|tsconfig.json|vitest.config.ts|playwright.config.ts) code=true ;;
+              src/*|test/*|ci/*|wrangler.jsonc|tsconfig.json|vitest.config.ts|playwright.config.ts) code=true ;;
               package.json|package-lock.json|.npmrc) deps=true ;;
               .github/*) ci=true ;;
             esac
