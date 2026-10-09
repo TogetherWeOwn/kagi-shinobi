@@ -74,7 +74,7 @@ jobs:
     steps:
       # Default ref: this workflow's own commit. The gate script is not taken
       # from the tag it judges.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       # Node >= 24 runs the .ts gate with no build step or dependency install.
       - uses: actions/setup-node@v7
         with:
@@ -121,7 +121,7 @@ jobs:
 
       # The exact commit the guard judged, not the tag name: a tag can be
       # moved between the two jobs, a SHA cannot.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ needs.guard.outputs.sha }}
 
