@@ -23,3 +23,5 @@ than quietly rewritten.
 | [0014](0014-searxng-fallback-engine.md) | SearXNG fallback engine behind `engine=auto` | accepted | 2026-10-01 |
 | [0015](0015-build-sha-in-authenticated-health.md) | Build SHA in authenticated /health | accepted | 2026-10-01 |
 | [0016](0016-scrape-markup-change-loud-failure.md) | Fail loudly when Kagi's search markup moves | accepted | 2026-10-01 |
+| [0017](0017-result-cache.md) | Read-through result cache that works on workers.dev | accepted | 2026-10-02 |
+| [0018](0018-automated-production-deploy-gate.md) | Automated production deploy gate | accepted | 2026-10-04 |

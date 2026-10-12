@@ -3,7 +3,9 @@ name: Release Please
 # Versioning. Conventional commits on main become a "Release PR" that bumps
 # package.json and CHANGELOG.md; merging it publishes a GitHub release and tag.
 # When that happens the `deploy` job below calls .github/workflows/deploy.yml
-# with the new tag, which then waits for `production` environment approval.
+# with the new tag. Its `guard` job checks the tag against main and CI, then
+# either approves automatically (PRODUCTION_AUTO_APPROVE=true) or the run waits
+# for the `production` environment's reviewer — see deploy.yml.
 # It is a direct call, not a `release: published` trigger, because releases
 # created with GITHUB_TOKEN never start other workflows.
 #
@@ -46,9 +48,11 @@ jobs:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
     # A called workflow can only keep or reduce these, so the deploy never
-    # sees the write scopes above.
+    # sees the write scopes above. actions: read is for the deploy guard (CI
+    # run list, environment).
     permissions:
       contents: read
+      actions: read
     # No `secrets: inherit`: the deploy's secrets are `production`
     # environment secrets, which resolve inside the gated job itself.
     uses: ./.github/workflows/deploy.yml

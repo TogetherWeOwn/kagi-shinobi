@@ -11,6 +11,7 @@ import { readLimit } from "../util/ratelimit.js";
 import { fetchSmallWebRss } from "../kagi/scrape/smallweb.js";
 import { resolveMode } from "../kagi/mode.js";
 import { loadToken } from "../token/store.js";
+import { resultCacheStub } from "../cache/read-through.js";
 
 interface ResourceContent {
   uri: string;
@@ -48,12 +49,40 @@ export function registerResources(server: McpServer, env: Env): void {
     },
     async (uri) => ({ contents: [await readSmallWebRecent(uri.href)] }),
   );
+
+  server.resource(
+    "kagi_cache_stats",
+    "kagi://cache-stats",
+    {
+      description:
+        "Result-cache counters: hits, misses (upstream fetches), stores, live entries, hit_rate, per domain.",
+      mimeType: "application/json",
+    },
+    async (uri) => ({ contents: [await readCacheStats(env, uri.href)] }),
+  );
 }
 
 async function readBudget(env: Env, uri: string): Promise<ResourceContent> {
   try {
     const snap = await budgetSnapshot(env);
     return { uri, mimeType: "application/json", text: JSON.stringify(snap, null, 2) };
+  } catch (err) {
+    return {
+      uri,
+      mimeType: "application/json",
+      text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+    };
+  }
+}
+
+// ADR 0017: the hit rate the card's acceptance is measured by. Counters are
+// cumulative — the hourly purge removes entries, never counts.
+async function readCacheStats(env: Env, uri: string): Promise<ResourceContent> {
+  try {
+    const stub = resultCacheStub(env);
+    if (!stub) throw new Error("RESULT_CACHE binding not configured; the cache is off");
+    const stats = await stub.stats();
+    return { uri, mimeType: "application/json", text: JSON.stringify(stats, null, 2) };
   } catch (err) {
     return {
       uri,
