@@ -12,6 +12,13 @@ updates:
       # Dev tooling churns often and is low risk — batch it into one PR.
       dev-dependencies:
         dependency-type: "development"
+    ignore:
+      # vitest 5 needs @cloudflare/vitest-pool-workers support (it peers
+      # vitest ^4). Re-take the major once pool-workers supports vitest 5.
+      - dependency-name: "vitest"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@vitest/coverage-istanbul"
+        update-types: ["version-update:semver-major"]
     # Production deps stay ungrouped: each gets its own reviewable PR.
     # Note the lockfile can float other production deps inside their existing
     # caret ranges even when package.json is untouched — diff package-lock.json,
