@@ -70,16 +70,18 @@
     // Per-bearer rate limit (requests per minute). 0 disables.
     "PER_BEARER_RPM": "60",
     // Scoped client keys (CLIENT_KEYS secret, ADR 0013): per-key requests
-    // per minute and per UTC day. Kept human-scale on purpose — scrape mode
-    // rides one Kagi subscription. 0 disables that window.
-    "CLIENT_KEY_RPM": "10",
-    "CLIENT_KEY_RPD": "300",
+    // per minute and per UTC day. Volume caps removed per owner order
+    // 2026-10-13 — both windows are 0 (disabled) for every client key.
+    // 0 disables that window.
+    "CLIENT_KEY_RPM": "0",
+    "CLIENT_KEY_RPD": "0",
     // Global budget on upstream Kagi calls, all callers combined (ADR 0013).
-    // Counted per call that reaches Kagi, not per worker request. 0 disables
-    // that window.
+    // Counted per call that reaches Kagi, not per worker request. Day and
+    // month volume caps removed per owner order 2026-10-13 (0 = disabled);
+    // only the 2/s anti-ban pacer remains. 0 disables that window.
     "KAGI_CALLS_PER_SECOND": "2",
-    "KAGI_CALLS_PER_DAY": "600",
-    "KAGI_CALLS_PER_MONTH": "15000",
+    "KAGI_CALLS_PER_DAY": "0",
+    "KAGI_CALLS_PER_MONTH": "0",
     // Muriel is $1 per summary — require an explicit confirm flag on the
     // tool call unless this is set to "false".
     "SUMMARIZER_MURIEL_REQUIRES_CONFIRM": "true",

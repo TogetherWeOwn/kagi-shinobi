@@ -9,11 +9,14 @@
 //
 // takeKagiCall() is called immediately before each upstream Kagi fetch. The
 // day and month windows refuse outright; the per-second window paces, waiting
-// out the current second (bounded) before refusing. Fails CLOSED when the
-// Meter is unreachable, as ADR 0006 does for the spend counter.
+// out the current second (bounded) before refusing. Fails OPEN when the
+// Meter is unreachable: the day/month volume caps are removed (all callers
+// share only the per-second anti-ban pacer), so a dead counter must not take
+// search down with it. Paid-API spend still fails closed in kagi/api/cost.ts.
 
 import type { Env } from "../env.js";
 import { KagiRateLimitError } from "./errors.js";
+import { logWarn } from "../util/log.js";
 
 export interface KagiCallLimits {
   perSecond: number;
@@ -30,13 +33,21 @@ function readVar(raw: string | undefined, fallback: number): number {
 export function readKagiCallLimits(env: Env): KagiCallLimits {
   return {
     perSecond: readVar(env.KAGI_CALLS_PER_SECOND, 2),
-    perDay: readVar(env.KAGI_CALLS_PER_DAY, 600),
-    perMonth: readVar(env.KAGI_CALLS_PER_MONTH, 15_000),
+    perDay: readVar(env.KAGI_CALLS_PER_DAY, 0),
+    perMonth: readVar(env.KAGI_CALLS_PER_MONTH, 0),
   };
 }
 
 /** Longest a caller waits for the per-second window before being refused. */
 const MAX_PACE_WAIT_MS = 3_000;
+
+/**
+ * Pacing pause applied when the Meter is unreachable and the call is admitted
+ * fail-open. One half of the per-second window quantum, so a Meter outage
+ * degrades to roughly human-scale pacing instead of an unbounded burst
+ * against the owner's Kagi session.
+ */
+const METER_DOWN_PACE_MS = 500;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -52,7 +63,9 @@ export async function takeKagiCall(env: Env, now: () => number = Date.now): Prom
       verdict = await stub.takeKagiCall(now(), perSecond, perDay, perMonth);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new KagiRateLimitError(60, `Kagi call budget unavailable, refusing: ${msg}`);
+      logWarn("kagi budget meter unreachable, failing open", { error: msg });
+      await sleep(METER_DOWN_PACE_MS);
+      return;
     }
     if (verdict.ok) return;
     if (verdict.window === "second" && waited + verdict.retry_after_ms <= MAX_PACE_WAIT_MS) {

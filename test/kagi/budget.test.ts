@@ -1,5 +1,5 @@
 // takeKagiCall — the caller side of the global Kagi call budget (ADR 0013).
-// The Meter is a scripted stub here so pacing, refusal, and fail-closed can be
+// The Meter is a scripted stub here so pacing, refusal, and fail-open can be
 // driven precisely; the DO's own windows are pinned in
 // test/workers/kagi-budget.test.ts.
 
@@ -23,8 +23,8 @@ function envWith(verdicts: Verdict[] | Error, vars: Record<string, string> = {})
 }
 
 describe("readKagiCallLimits", () => {
-  it("defaults to 2/s, 600/day, 15000/month", () => {
-    expect(readKagiCallLimits({} as Env)).toEqual({ perSecond: 2, perDay: 600, perMonth: 15_000 });
+  it("defaults to 2/s with day/month volume caps disabled", () => {
+    expect(readKagiCallLimits({} as Env)).toEqual({ perSecond: 2, perDay: 0, perMonth: 0 });
   });
   it("treats garbage and negatives as disabled", () => {
     const env = { KAGI_CALLS_PER_SECOND: "x", KAGI_CALLS_PER_DAY: "-1", KAGI_CALLS_PER_MONTH: "7" } as unknown as Env;
@@ -46,7 +46,7 @@ describe("takeKagiCall", () => {
   it("admits when the Meter admits", async () => {
     const { env, takeKagiCall: stub } = envWith([{ ok: true, retry_after_ms: 0 }]);
     await expect(takeKagiCall(env)).resolves.toBeUndefined();
-    expect(stub).toHaveBeenCalledWith(expect.any(Number), 2, 600, 15_000);
+    expect(stub).toHaveBeenCalledWith(expect.any(Number), 2, 0, 0);
   });
 
   it("paces through a full second, then admits", async () => {
@@ -71,10 +71,18 @@ describe("takeKagiCall", () => {
     expect(err.message).toContain("day: 600/600");
   });
 
-  it("fails closed when the Meter is unreachable", async () => {
-    const { env } = envWith(new Error("DO down"));
+  it("fails open when the Meter is unreachable", async () => {
+    const { env, takeKagiCall: stub } = envWith(new Error("DO down"));
+    await expect(takeKagiCall(env)).resolves.toBeUndefined();
+    expect(stub).toHaveBeenCalledTimes(1);
+  });
+
+  it("still refuses a configured day window past its cap", async () => {
+    const { env } = envWith([{ ok: false, window: "day", count: 5, limit: 5, retry_after_ms: 3_600_500 }], {
+      KAGI_CALLS_PER_DAY: "5",
+    });
     const err = (await takeKagiCall(env).catch((e) => e)) as KagiRateLimitError;
     expect(err).toBeInstanceOf(KagiRateLimitError);
-    expect(err.message).toContain("DO down");
+    expect(err.message).toContain("day: 5/5");
   });
 });
