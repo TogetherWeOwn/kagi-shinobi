@@ -63,7 +63,7 @@ function readVar(raw: string | undefined, fallback: number): number {
 }
 
 export function readClientLimits(env: Env): { rpm: number; rpd: number } {
-  return { rpm: readVar(env.CLIENT_KEY_RPM, 10), rpd: readVar(env.CLIENT_KEY_RPD, 300) };
+  return { rpm: readVar(env.CLIENT_KEY_RPM, 0), rpd: readVar(env.CLIENT_KEY_RPD, 0) };
 }
 
 export async function checkClientRate(

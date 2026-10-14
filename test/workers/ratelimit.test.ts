@@ -107,8 +107,8 @@ describe("checkAndIncrement", () => {
 });
 
 describe("client-key limits (ADR 0013)", () => {
-  it("readClientLimits defaults to 10/min and 300/day, and treats garbage as disabled", () => {
-    expect(readClientLimits({ ...env, CLIENT_KEY_RPM: undefined, CLIENT_KEY_RPD: undefined } as unknown as typeof env)).toEqual({ rpm: 10, rpd: 300 });
+  it("readClientLimits defaults to both windows disabled, and treats garbage as disabled", () => {
+    expect(readClientLimits({ ...env, CLIENT_KEY_RPM: undefined, CLIENT_KEY_RPD: undefined } as unknown as typeof env)).toEqual({ rpm: 0, rpd: 0 });
     expect(readClientLimits({ ...env, CLIENT_KEY_RPM: "x", CLIENT_KEY_RPD: "-3" } as typeof env)).toEqual({ rpm: 0, rpd: 0 });
   });
 
