@@ -12,7 +12,9 @@
 // out the current second (bounded) before refusing. Fails OPEN when the
 // Meter is unreachable: the day/month volume caps are removed (all callers
 // share only the per-second anti-ban pacer), so a dead counter must not take
-// search down with it. Paid-API spend still fails closed in kagi/api/cost.ts.
+// search down with it. The fail-open path paces through an isolate-local
+// slot queue at the per-second rate (ADR 0019), refusing once the wait would
+// pass the pace bound. Paid-API spend still fails closed in kagi/api/cost.ts.
 
 import type { Env } from "../env.js";
 import { KagiRateLimitError } from "./errors.js";
@@ -42,12 +44,43 @@ export function readKagiCallLimits(env: Env): KagiCallLimits {
 const MAX_PACE_WAIT_MS = 3_000;
 
 /**
- * Pacing pause applied when the Meter is unreachable and the call is admitted
- * fail-open. One half of the per-second window quantum, so a Meter outage
- * degrades to roughly human-scale pacing instead of an unbounded burst
- * against the owner's Kagi session.
+ * Flat pause applied when the Meter is unreachable, no per-second rate is
+ * configured, and the call is admitted fail-open. With no rate to pace at,
+ * pacing is impossible; this only avoids a perfectly synchronized burst.
  */
 const METER_DOWN_PACE_MS = 500;
+
+/**
+ * Next free slot of the isolate-local fail-open pacer (ms since epoch). Each
+ * admitted call takes the later of now and this value, then advances it by
+ * one per-second quantum, so concurrent callers leave spread out instead of
+ * hitting Kagi together. Module-level because there is no DO to serialize on
+ * in this path; each isolate paces its own callers. Anchored with max()
+ * against the caller's clock, so slots never go backward even if a stale
+ * value outlives the isolate's idle period.
+ */
+let failOpenNextSlotMs = 0;
+
+async function paceFailOpen(perSecond: number, now: () => number): Promise<void> {
+  if (perSecond <= 0) {
+    await sleep(METER_DOWN_PACE_MS);
+    return;
+  }
+  const t = now();
+  const slot = Math.max(t, failOpenNextSlotMs);
+  const wait = slot - t;
+  if (wait > MAX_PACE_WAIT_MS) {
+    throw new KagiRateLimitError(
+      Math.max(1, Math.ceil(wait / 1000)),
+      `Kagi call budget unavailable, fail-open wait exceeded (${wait}ms)`,
+    );
+  }
+  // Claimed synchronously up to the first await below, so concurrent callers
+  // cannot take the same slot: JS runs each continuation's read-and-advance
+  // without interleaving.
+  failOpenNextSlotMs = slot + 1000 / perSecond;
+  if (wait > 0) await sleep(wait);
+}
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -64,7 +97,7 @@ export async function takeKagiCall(env: Env, now: () => number = Date.now): Prom
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logWarn("kagi budget meter unreachable, failing open", { error: msg });
-      await sleep(METER_DOWN_PACE_MS);
+      await paceFailOpen(perSecond, now);
       return;
     }
     if (verdict.ok) return;

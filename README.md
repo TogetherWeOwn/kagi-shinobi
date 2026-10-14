@@ -50,8 +50,9 @@ the global pacer: `KAGI_CALLS_PER_SECOND` (default 2, paced — callers wait out
 the current second, bounded, before a `429` with `Retry-After`).
 `KAGI_CALLS_PER_DAY` and `KAGI_CALLS_PER_MONTH` default to `0` (disabled — no
 volume caps). A fan-out of N queries costs N pacer slots. When the Meter
-counter itself is unreachable the pacer fails open (one pacing pause, then
-admit) so search stays up. `0` disables a window.
+counter itself is unreachable the pacer fails open (isolate-local slot queue
+at the per-second rate, refusing past a 3 s wait, then admit) so search stays
+up. `0` disables a window. See ADR 0019.
 
 **SearXNG `json_engine`:**
 ```yaml

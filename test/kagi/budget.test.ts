@@ -77,6 +77,45 @@ describe("takeKagiCall", () => {
     expect(stub).toHaveBeenCalledTimes(1);
   });
 
+  it("spreads concurrent fail-open admissions across pacer slots", async () => {
+    const { env } = envWith(new Error("DO down"), { KAGI_CALLS_PER_SECOND: "10" });
+    const admitTimes: number[] = [];
+    const N = 5;
+    await Promise.all(
+      Array.from({ length: N }, () =>
+        takeKagiCall(env).then(() => {
+          admitTimes.push(Date.now());
+        }),
+      ),
+    );
+    expect(admitTimes).toHaveLength(N);
+    const span = Math.max(...admitTimes) - Math.min(...admitTimes);
+    // 5 slots 100ms apart admit over ~400ms; a flat pause admits all at once.
+    expect(span).toBeGreaterThanOrEqual(200);
+  });
+
+  it("fails open with a flat pause when no per-second rate is configured", async () => {
+    const { env, takeKagiCall: stub } = envWith(new Error("DO down"), {
+      KAGI_CALLS_PER_SECOND: "0",
+      KAGI_CALLS_PER_DAY: "5",
+    });
+    await expect(takeKagiCall(env)).resolves.toBeUndefined();
+    expect(stub).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses fail-open calls once the pacer wait would pass the bound", async () => {
+    const { env } = envWith(new Error("DO down"), { KAGI_CALLS_PER_SECOND: "10" });
+    const N = 40;
+    const results = await Promise.allSettled(Array.from({ length: N }, () => takeKagiCall(env)));
+    const refused = results.filter((r) => r.status === "rejected");
+    const admitted = results.filter((r) => r.status === "fulfilled");
+    expect(admitted.length).toBeGreaterThan(0);
+    expect(refused.length).toBeGreaterThan(0);
+    for (const r of refused) {
+      expect((r as PromiseRejectedResult).reason).toBeInstanceOf(KagiRateLimitError);
+    }
+  });
+
   it("still refuses a configured day window past its cap", async () => {
     const { env } = envWith([{ ok: false, window: "day", count: 5, limit: 5, retry_after_ms: 3_600_500 }], {
       KAGI_CALLS_PER_DAY: "5",
