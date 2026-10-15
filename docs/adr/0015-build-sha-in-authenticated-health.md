@@ -1,13 +1,13 @@
 # ADR 0015 — Build SHA in authenticated /health
 
 **Status:** Accepted — 2026-10-01
-**Relates to:** [TOG-11839](/TOG/issues/TOG-11839)
+**Relates to:** [ADR 0018](0018-automated-production-deploy-gate.md) (the deploy gate that consumes the SHA)
 
 ## Context
 
 The live Worker predates PR #14, which showed merged ≠ deployed: nothing in the
 running worker identifies which commit it was built from, so an operator cannot
-confirm a deploy landed. CI is moving to self-hosted runners and production
+confirm a deploy landed. CI runs on hosted runners and production
 deploys get their own gated workflow; the workflow needs a var to inject and
 the worker needs a place to report it.
 

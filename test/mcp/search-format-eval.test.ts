@@ -1,4 +1,4 @@
-// Acceptance eval for TOG-11838 (ADR 0013): the median chars of the whole
+// Acceptance eval for ADR 0013: the median chars of the whole
 // tool payload (text + JSON.stringify(structuredContent)) for a 10-result
 // search drops ≥40% vs the frozen legacy baseline, measured over 20 fixed
 // queries. The card names *both* the text filler and the structured
@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 import type { SearchResponse } from "../../src/kagi/types";
 import { formatSearchConcise } from "../../src/mcp/search-format";
 
-// Frozen copy of the pre-change tool output (src/mcp.ts, before TOG-11838):
+// Frozen copy of the pre-change tool output (src/mcp.ts, before ADR 0013):
 // the text formatter plus the full structured passthrough.
 function baselinePayload(queries: string[], responses: (SearchResponse | null)[]): string {
   const chunks: string[] = [];
@@ -135,7 +135,7 @@ function median(xs: number[]): number {
   return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-describe("TOG-11838 acceptance: concise output is ≥40% smaller", () => {
+describe("ADR 0013 acceptance: concise output is ≥40% smaller", () => {
   it("median payload chars for a 10-result search drops ≥40% vs baseline on 20 fixed queries", () => {
     expect(TOPICS).toHaveLength(20);
     const baseLens: number[] = [];

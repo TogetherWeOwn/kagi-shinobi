@@ -12,3 +12,13 @@ test-results/
 playwright-report/
 *.log
 .DS_Store
+__pycache__/
+# Agent-local state never belongs in the public repo (open-source gate):
+# identity baselines, generated tool manifests, learning caches, review notes.
+# This ignore is tree-only: git history still contains these files and older
+# internal references. Never flip this repo public in place; rewrite its
+# history first, or publish from a fresh-history copy instead.
+.claude/identity.json
+.claude/ecc-tools.json
+.claude/homunculus/
+.claude/reviews/

@@ -64,7 +64,7 @@ export class KagiApiClient {
         signal: controller.signal,
         headers: {
           Authorization: `Bot ${this.env.KAGI_API_KEY}`,
-          "User-Agent": "kagi-shinobi/0.2 (+https://github.com/Rick7C2/kagi-shinobi)",
+          "User-Agent": "kagi-shinobi/0.2 (+https://github.com/TogetherWeOwn/kagi-shinobi)",
           ...(req.headers ?? {}),
         },
       };

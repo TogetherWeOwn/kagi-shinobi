@@ -9,15 +9,15 @@ GET /search view this consumes — see the merge note below)
 ## Context
 
 Scrape mode rides one personal Kagi subscription, so Kagi traffic must stay
-human-scale. SearXNG on rbx1 is free and unlimited but noisier. Today every
+human-scale. A self-hosted SearXNG instance is free and unlimited but noisier. Today every
 search needs Kagi to answer: a dead session, a CAPTCHA, or a zero spend cap
 (the standing default — `MAX_API_CENTS_PER_MONTH` stays 0) fails the whole
 call even though a free fallback exists.
 
 The parallel GET /search work (ADR 0013) *serves* SearXNG's `format=json`
 shape (`{results:[{url,title,content,engine,...}]}`) so SearXNG's
-`json_engine` can consume this worker. This card *consumes* that same shape
-from the rbx1 instance — the two must stay in step.
+`json_engine` can consume this worker. This change *consumes* that same shape
+from the configured SearXNG instance — the two must stay in step.
 
 ## Decision
 
@@ -47,13 +47,13 @@ from the rbx1 instance — the two must stay in step.
   only wraps the other tools). Search-only: summarize, extract,
   enrich, rank and small_web are untouched.
 
-**Transport: operator-configured, never the Caddy path.** rbx1 is reached via
-the `SEARXNG_BASE_URL` var (a Tunnel hostname fronted by Access, or a
-VPC-adjacent binding — a hostname, never an IP) plus the optional
+**Transport: operator-configured, never a hardcoded host.** The SearXNG instance
+is reached via the `SEARXNG_BASE_URL` var (a Tunnel hostname fronted by Access,
+or a VPC-adjacent binding — a hostname, never an IP) plus the optional
 `SEARXNG_ACCESS_CLIENT_ID` / `SEARXNG_ACCESS_CLIENT_SECRET` secrets, sent as
-`CF-Access-*` headers. No code in this change knows the `/mcp-ext` path; the
-actual rbx1 wiring (secret values, Access policy) is operator deployment work
-through the gated deploy path, not this card.
+`CF-Access-*` headers. No code in this change knows a concrete instance address;
+the actual instance wiring (secret values, Access policy) is operator deployment
+work through the gated deploy path.
 
 ## Consequences
 

@@ -1,7 +1,7 @@
 # kagi-shinobi — Implementation Plan
 
 > **Status:** Approved 2026-07-10. Implementation in progress.
-> **Location:** `C:\Users\zephyr\projects\kagi-shinobi\`
+> **Location:** the `kagi-shinobi` repository working copy
 
 ## Locked decisions (from review)
 

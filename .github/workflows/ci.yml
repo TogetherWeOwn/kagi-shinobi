@@ -7,7 +7,7 @@ on:
   # Release PRs are opened with GITHUB_TOKEN, which starts no workflows, so
   # their CI is dispatched by hand (see release-please.yml).
   workflow_dispatch:
-  # Nightly full suite (TOG-14877): the `changes` job forces every area true
+  # Nightly full suite: the `changes` job forces every area true
   # on `schedule`, so this run always exercises the whole pipeline.
   schedule:
     - cron: "17 4 * * *"
@@ -20,12 +20,12 @@ permissions:
   contents: read
 
 jobs:
-  # Change detection (CI standard TOG-14877). Native `git diff --name-only`
+  # Change detection (CI standard). Native `git diff --name-only`
   # against the merge base — no third-party action. One boolean per area;
   # heavy jobs below run only when their area changed. Push-to-main,
   # schedule and dispatch runs force every area true (full suite).
   changes:
-    # Runner routing (TOG-16089): repo vars CI_OVERFLOW_RUNNER (JSON runs-on,
+    # Runner routing: repo vars CI_OVERFLOW_RUNNER (JSON runs-on,
     # e.g. ["ubuntu-latest"]), CI_OVERFLOW_JOBS (JSON job ids) and
     # CI_OVERFLOW_EVENTS (JSON event names) all select the job. Flip back
     # without a PR by deleting CI_OVERFLOW_RUNNER. Hosted minutes come from
@@ -123,7 +123,7 @@ jobs:
       # Cheapest and most specific diagnostic first.
       - run: npm run test:e2e
 
-  # The single required check (CI standard TOG-14877). Passes when every
+  # The single required check (CI standard). Passes when every
   # needed job succeeded or was skipped. Branch protection must require only
   # this (+ pr-lint, secret-scan) — cutover via Operator card to the CEO,
   # since ruleset writes are 403 for the GitHub App.

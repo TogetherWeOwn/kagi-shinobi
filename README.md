@@ -101,7 +101,7 @@ For local dev, copy `.dev.vars.example` to `.dev.vars`, fill in values, then
 ## SearXNG fallback engine
 
 Kagi scrape mode rides one personal subscription, so it must stay
-human-scale. SearXNG on rbx1 is free and unlimited but noisier — use it as the
+human-scale. A self-hosted SearXNG instance is free and unlimited but noisier — use it as the
 fallback tier via the `engine` param on `POST /search` and
 `kagi_search_fetch`: `kagi` (default, current behavior), `searxng` (straight
 to the fallback), or `auto` (Kagi while under budget and the session is
@@ -111,7 +111,7 @@ Results keep the same schema either way (`source_impl: "searxng"`).
 Setup (operator deployment work, through the gated deploy path):
 
 ```powershell
-# 1. Point the worker at the rbx1 instance — a Tunnel hostname (or binding),
+# 1. Point the worker at your SearXNG instance — a Tunnel hostname (or binding),
 #    never an IP, and never the Caddy /mcp-ext path
 #    (wrangler.jsonc var; empty = fallback unconfigured)
 #    "SEARXNG_BASE_URL": "https://searxng.<your-tunnel>.cfargotunnel.com"
