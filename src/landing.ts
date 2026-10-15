@@ -58,7 +58,7 @@ export const LANDING_HTML = `<!doctype html>
   <pre><code>{
   "mcpServers": {
     "kagi-shinobi": {
-      "url": "https://kagi-shinobi.5150.workers.dev/mcp",
+      "url": "https://kagi-shinobi.&lt;your-subdomain&gt;.workers.dev/mcp",
       "headers": { "Authorization": "Bearer &lt;YOUR_ADMIN_TOKEN&gt;" }
     }
   }
@@ -77,7 +77,7 @@ export const LANDING_HTML = `<!doctype html>
   <p>API calls are metered against <code>MAX_API_CENTS_PER_MONTH</code> (default <code>0</code> &mdash; every API call refuses until you raise the cap).</p>
 
   <h2>Source</h2>
-  <p><a href="https://github.com/Rick7C2/kagi-shinobi">github.com/Rick7C2/kagi-shinobi</a></p>
+  <p><a href="https://github.com/TogetherWeOwn/kagi-shinobi">github.com/TogetherWeOwn/kagi-shinobi</a></p>
 </body>
 </html>`;
 

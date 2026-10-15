@@ -1,7 +1,7 @@
 <!--
 Title: Conventional Commits header, e.g. `fix(search): fall back to searxng when the Kagi budget is spent`.
 Types: feat fix perf refactor test docs build ci chore revert style security. Max 100 chars, no trailing period.
-Keep the card ID out of the title. This repo is private, so put it on the Refs line under "Linked Issues".
+Keep issue references out of the title. Link them under "Linked Issues" instead (`Fixes #123` for a GitHub issue).
 Write short, plain sentences. Fill in every section: the `pr-lint` check reads them.
 The checks live in .github/scripts/pr_standards.py with their tests next to it.
 -->
@@ -29,7 +29,7 @@ The checks live in .github/scripts/pr_standards.py with their tests next to it.
   (B) No issue exists: describe the problem here in your own words.
 -->
 
-Refs: TOG-
+Fixes #
 
 ## What Changed
 

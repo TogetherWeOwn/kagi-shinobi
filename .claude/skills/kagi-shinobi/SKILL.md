@@ -5,7 +5,7 @@ description: Development conventions and patterns for kagi-shinobi. TypeScript p
 
 # Kagi Shinobi Conventions
 
-> Generated from [Rick7C2/kagi-shinobi](https://github.com/Rick7C2/kagi-shinobi) on 2026-08-07
+> Generated from [TogetherWeOwn/kagi-shinobi](https://github.com/TogetherWeOwn/kagi-shinobi) on 2026-08-07
 
 ## Overview
 

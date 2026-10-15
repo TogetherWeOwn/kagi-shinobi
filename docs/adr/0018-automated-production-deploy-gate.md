@@ -71,7 +71,7 @@ delete the variable, re-add the reviewer.
 - A release deploys with nobody clicking, once CI on its commit is green.
 - A red or missing CI run, an off-main tag, a tag/version mismatch or a widened
   branch policy now stops a deploy, in legacy mode too.
-- The guard occupies a self-hosted runner for the length of that CI run (about
+- The guard occupies a CI runner for the length of that CI run (about
   7 minutes today, 40 at most) while it waits.
 - The gate script is TypeScript run directly by Node 24 (type stripping), so it
   has no relative imports and no enums, and the guard job installs nothing.

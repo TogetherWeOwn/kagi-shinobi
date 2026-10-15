@@ -1,7 +1,8 @@
 // SearXNG fallback search client.
 //
 // Kagi scrape mode rides one personal subscription, so it must stay
-// human-scale; SearXNG on rbx1 is free and unlimited but noisier. This client
+// human-scale; a self-hosted SearXNG instance is free and unlimited but
+// noisier. This client
 // is the fallback tier behind `engine=searxng|auto`: it fetches SearXNG's
 // `format=json` and normalizes into the canonical `SearchResponse` with
 // `source_impl: "searxng"`, so the schema is identical whichever engine
@@ -13,7 +14,7 @@
 // that endpoint serves SearXNG format, this client consumes it, so the two
 // shapes must stay in step.
 //
-// Transport: rbx1 is reached through the operator-configured
+// Transport: the SearXNG instance is reached through the operator-configured
 // `SEARXNG_BASE_URL` (a Cloudflare Tunnel hostname fronted by Access, or a
 // VPC-adjacent binding the operator wires — never the IP-pinned Caddy
 // `/mcp-ext` path, which this client does not know). When the Access service
@@ -65,7 +66,7 @@ export class SearxngClient {
     if (!isSearxngConfigured(this.env)) {
       throw new KagiNotConfiguredError(
         "SEARXNG_BASE_URL is not set — the SearXNG fallback is unavailable. " +
-          "Set the var to the Tunnel hostname (or binding) of the rbx1 instance.",
+          "Set the var to the Tunnel hostname (or binding) of your SearXNG instance.",
       );
     }
   }

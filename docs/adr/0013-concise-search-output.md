@@ -1,6 +1,6 @@
 # ADR 0013 — Concise search output with stable citation ids and dedupe
 
-**Status:** Proposed — 2026-10-01 (TOG-11838)
+**Status:** Proposed — 2026-10-01
 
 ## Context
 

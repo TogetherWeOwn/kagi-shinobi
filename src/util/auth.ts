@@ -52,7 +52,7 @@ function timingSafeEqual(a: string, b: string): boolean {
 // CLIENT_KEYS is an optional secret holding a JSON object that maps a client
 // name to the lowercase hex SHA-256 of that client's key:
 //
-//   {"searxng-rbx1":"9f86d081884c7d65..."}
+//   {"searxng-main":"9f86d081884c7d65..."}
 //
 // Only digests are stored, so the secret alone does not hand out a usable
 // credential. A client key is accepted alongside ADMIN_TOKEN on the read-only

@@ -12,7 +12,7 @@ serialization pattern it reuses), [ADR 0013](0013-scoped-client-keys-and-searxng
 `src/kagi/cache.ts` was dead code: nothing in `src/` called it, and the Cache
 API does not operate on `*.workers.dev`, so every agent query hit Kagi. The
 owner verified on 2026-10-01 that the Cache API **does** work on the attached
-custom domain (`shinobi.infextion.net`), and corrected the account tier: Workers
+custom domain (the production domain attached in `wrangler.jsonc`), and corrected the account tier: Workers
 Paid + R2 Paid + Cache Reserve, not free tier. Quotas are not the constraint,
 but new usage-based spend stays minimal and is noted in the PR.
 

@@ -92,7 +92,7 @@
     "BUILD_SHA": "dev",
     // SearXNG fallback engine (ADR 0014). Empty = unconfigured: engine=auto
     // behaves exactly as before (Kagi only) and engine=searxng refuses with
-    // not_configured. Set to the Tunnel hostname (or binding) of the rbx1
+    // not_configured. Set to the Tunnel hostname (or binding) of your SearXNG
     // instance — a hostname, never an IP. Pair with the SEARXNG_ACCESS_*
     // secrets when the Tunnel sits behind Cloudflare Access.
     "SEARXNG_BASE_URL": ""
