@@ -16,7 +16,7 @@
 // Runs in workerd: src/index.ts reaches cloudflare:workers.
 
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import worker from "../../src/index";
 
 const TOKEN = "stateless-admin-token";
@@ -182,6 +182,33 @@ describe("/mcp serves without a per-session Durable Object", () => {
     }
   });
 
+  it.each([
+    { label: "without a session header", sessionId: null },
+    { label: "with an old session id", sessionId: "streamable-http:0123456789abcdef" },
+  ])("answers DELETE /mcp $label without using a session DO or contacting Kagi", async ({ sessionId }) => {
+    // SDK 1.30.0 skips session validation when sessionIdGenerator is absent:
+    // DELETE closes the request's transport with 200 and no response body.
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+      throw new Error("DELETE /mcp must not contact an upstream");
+    });
+    try {
+      const headers = new Headers(auth);
+      if (sessionId !== null) headers.set("Mcp-Session-Id", sessionId);
+      const request = new Request("https://worker.test/mcp", { method: "DELETE", headers });
+      const ctx = createExecutionContext();
+      const res = await worker.fetch(request, testEnv(), ctx);
+      await waitOnExecutionContext(ctx);
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(res.status).toBe(200);
+      expect(res.headers.get("mcp-session-id")).toBeNull();
+      expect(res.body).toBeNull();
+      expect(await res.text()).toBe("");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("answers GET /mcp with 405: there is no server-to-client stream to hold open", async () => {
     // Spec: a server that offers no standalone SSE stream answers GET with 405.
     // Without this a GET would park an idle SSE response nothing ever writes to.
@@ -194,7 +221,9 @@ describe("/mcp serves without a per-session Durable Object", () => {
     await waitOnExecutionContext(ctx);
 
     expect(res.status).toBe(405);
-    expect(res.headers.get("Allow")).toContain("POST");
+    expect(res.body).toBeNull();
+    expect(await res.text()).toBe("");
+    expect(res.headers.get("Allow")).toBe("POST, DELETE");
   });
 });
 
