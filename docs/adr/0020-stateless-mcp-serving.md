@@ -82,6 +82,7 @@ new servers at a per-request stateless handler.
   checked before changing the published wire contract. The cleanup does not
   upgrade the SDK or change registration.
 - After deploy, confirm the `KagiMcpAgent` namespace storage is gone in the
-  Cloudflare dashboard or `durableObjectsPeriodicGroups` analytics, and run
-  one cached query to verify `ResultCache` still works. A successful deploy
-  dry-run proves the configuration builds, not that remote storage is gone.
+  Cloudflare dashboard or `durableObjectsStorageGroups` analytics
+  (`max.storedBytes`), and run one cached query to verify `ResultCache` still
+  works. A successful deploy dry-run proves the configuration builds, not that
+  remote storage is gone.
