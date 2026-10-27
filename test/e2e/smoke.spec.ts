@@ -6,7 +6,7 @@
 // against a hand-built env — do not restate them. What is only true of a real
 // boot is that wrangler.jsonc's bindings and vars resolved, that the HTTP layer
 // emits the headers we think it does, and that an MCP client can complete a
-// Streamable-HTTP session against the Durable Object.
+// Streamable-HTTP session against the stateless /mcp route (ADR 0020).
 //
 // NO TEST HERE MAY REACH KAGI. The worker under test holds no Kagi credential
 // and the suite must not depend on the public internet, so every path
@@ -90,12 +90,12 @@ test.describe("the worker boots from wrangler.jsonc and answers on a socket", ()
 test.describe("a real MCP client completes a Streamable-HTTP session", () => {
   // The tools in scrape mode. mcp-tools.test.ts owns the *rule* that api-only
   // tools are hidden, driving it with a mode string it passes in. This owns the
-  // *path*: KAGI_MODE="scrape" in wrangler.jsonc reaching the agent inside a
-  // Durable Object, and the resulting list surviving the wire.
+  // *path*: KAGI_MODE="scrape" in wrangler.jsonc reaching the per-request
+  // server, and the resulting list surviving the wire.
   //
   // There is no exported source of truth to import — gating is implicit in the
   // `this.server.tool(...)` calls in src/mcp.ts, guarded by the capability
-  // checks that KagiMcpAgent.init() applies per mode. When this list fails,
+  // checks that registerKagiMcp() applies per mode. When this list fails,
   // re-derive it from there and from mcp-tools.test.ts's "hides the api-only
   // tools in scrape mode" case. Do not loosen the assertion to make it pass:
   // an exact set is the only version of this test that catches a tool
@@ -121,7 +121,8 @@ test.describe("a real MCP client completes a Streamable-HTTP session", () => {
     });
     client = new Client({ name: "kagi-shinobi-e2e", version: "0" });
     // connect() is the initialize handshake: it negotiates the protocol
-    // version, takes the Mcp-Session-Id off the response, and sends
+    // version, takes the Mcp-Session-Id off the response if there is one (the
+    // stateless route issues none, ADR 0020), and sends
     // notifications/initialized. Nothing in-process exercises any of it —
     // mcp-schema-contract.test.ts uses an InMemoryTransport with no session.
     await client.connect(transport);
@@ -144,8 +145,8 @@ test.describe("a real MCP client completes a Streamable-HTTP session", () => {
   test("gets the ADR 0010 error envelope back from a real tool call", async () => {
     // kagi_summarize_url rejects an unsupported target_language before it
     // touches the Kagi client (src/mcp.ts, isSupportedLanguage), which is why
-    // this is the tool call the suite can afford to make: it drives DO ->
-    // agent -> handler -> mcpError -> SSE -> client with no outbound request.
+    // this is the tool call the suite can afford to make: it drives worker ->
+    // per-request server -> handler -> mcpError -> SSE -> client with no outbound request.
     //
     // Scope: the envelope's *contents* are already pinned in-process by
     // test/workers/mcp-tools.test.ts (exact message, exact rendered text) —

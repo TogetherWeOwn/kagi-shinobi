@@ -1,5 +1,11 @@
 // Remote MCP server: exposes tools over Streamable HTTP.
 //
+// ADR 0020: /mcp is served statelessly — src/mcp/serve.ts builds one McpServer
+// per request with createKagiMcpServer() and hands it to a sessionless
+// transport. No Durable Object is involved. KagiMcpAgent below is retained only
+// so the MCP_OBJECT binding still names a class until the follow-up
+// `deleted_classes` migration drops it together with its stored sessions.
+//
 // S2 wired the KagiClient facade so the mode dispatcher runs on every call.
 // S3 added the official API endpoint impls. S4 registers the differentiated
 // tools (small_web, fastgpt, extract, enrich_{web,news}) with mode-gated
@@ -104,14 +110,47 @@ const RESEARCH_CANCEL_DESCRIPTION =
   "Cancel a running research job. Idempotent. Any partial output collected " +
   "so far remains available via kagi_research_get_output.";
 
+type WaitUntil = (promise: Promise<unknown>) => void;
+
+const SERVER_INFO = { name: "kagi-shinobi", version: "0.2.0-dev" } as const;
+
+/** A fresh, fully registered server. One per request: ADR 0020. */
+export function createKagiMcpServer(env: Env, waitUntil: WaitUntil): McpServer {
+  const server = new McpServer(SERVER_INFO);
+  registerKagiMcp(server, env, waitUntil);
+  return server;
+}
+
+/**
+ * Register every tool, resource and prompt on `server`. Mode gating happens
+ * here, per call, from `env` — nothing is read from or kept in a session.
+ */
+export function registerKagiMcp(server: McpServer, env: Env, waitUntil: WaitUntil): void {
+  new KagiMcpRegistrar(server, env).register(waitUntil);
+}
+
+/**
+ * Retained Durable Object class, no longer routed to (ADR 0020). It must keep
+ * existing while wrangler.jsonc binds MCP_OBJECT to it; removing it is a
+ * separate `deleted_classes` migration, which also deletes the stored session
+ * objects. init() delegates so the class stays a working McpAgent until then.
+ */
 export class KagiMcpAgent extends McpAgent<Env> {
-  server = new McpServer({
-    name: "kagi-shinobi",
-    version: "0.2.0-dev",
-  });
+  server = new McpServer(SERVER_INFO);
 
   async init(): Promise<void> {
-    const client = createKagiClient(this.env, { waitUntil: (p) => this.ctx.waitUntil(p) });
+    registerKagiMcp(this.server, this.env, (p) => this.ctx.waitUntil(p));
+  }
+}
+
+class KagiMcpRegistrar {
+  constructor(
+    private readonly server: McpServer,
+    private readonly env: Env,
+  ) {}
+
+  register(waitUntil: WaitUntil): void {
+    const client = createKagiClient(this.env, { waitUntil });
     const mode = client.mode;
 
     // Always registered — capability matrix marks these "both".
