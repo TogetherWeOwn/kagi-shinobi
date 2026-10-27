@@ -26,7 +26,7 @@ const { createKagiClient, getResearchStub } = vi.hoisted(() => ({
 vi.mock("../../src/kagi/client.js", () => ({ createKagiClient }));
 vi.mock("../../src/research/run.js", () => ({ getResearchStub }));
 
-const { KagiMcpAgent } = await import("../../src/mcp");
+const { registerKagiMcp } = await import("../../src/mcp");
 
 interface ToolDescriptor {
   name: string;
@@ -35,11 +35,9 @@ interface ToolDescriptor {
 }
 
 /**
- * Register the agent's tools into a real McpServer and read them back through
- * a real client, which is the only way to see the post-conversion schema.
- *
- * Object.create skips the DO constructor (see mcp-tools.test.ts); `server` and
- * `env` are defined on the instance so they shadow the prototype's.
+ * Register the tools into a real McpServer (as the stateless /mcp route does,
+ * ADR 0020) and read them back through a real client, which is the only way to
+ * see the post-conversion schema.
  */
 async function connectAgent(
   mode: string,
@@ -48,13 +46,7 @@ async function connectAgent(
   createKagiClient.mockReturnValue({ mode, ...clientOverrides });
 
   const server = new McpServer({ name: "kagi-shinobi", version: "test" });
-  const agent = Object.create(KagiMcpAgent.prototype) as {
-    server: McpServer;
-    init: () => Promise<void>;
-  };
-  agent.server = server;
-  Object.defineProperty(agent, "env", { value: env, configurable: true });
-  await agent.init();
+  registerKagiMcp(server, env, () => {});
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "contract-test", version: "test" });
