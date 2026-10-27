@@ -7,9 +7,15 @@
 // appear in tools/list.
 
 import { McpAgent } from "agents/mcp";
+import type { Connection, ConnectionContext, WSMessage } from "agents";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Env } from "./env.js";
+import {
+  LAST_ACTIVITY_KEY,
+  SESSION_PURGE_INTERVAL_S,
+  shouldPurgeSession,
+} from "./mcp/session-purge.js";
 import { createKagiClient, type KagiClient } from "./kagi/client.js";
 import { isToolAvailable } from "./kagi/capability.js";
 import { KagiError } from "./kagi/errors.js";
@@ -142,6 +148,64 @@ export class KagiMcpSession extends McpAgent<Env> {
     // all live in one init() body — easier to audit.
     registerResources(this.server, this.env);
     registerPrompts(this.server);
+  }
+
+  // Idle-session purge: every activity re-arms an idempotent 7-day interval
+  // schedule, and the schedule wipes the object once it has been idle past
+  // the policy (src/mcp/session-purge.ts). Streamable-HTTP traffic reaches
+  // the object as connections (one per POST/GET/DELETE) plus messages, so
+  // onConnect + onMessage together cover every client activity.
+  //
+  // onStart deliberately does NOT record activity: alarm wakes run startup
+  // too, and a touch there would make every purge check find a fresh
+  // session, so nothing would ever be destroyed. test/workers/session-purge
+  // pins that split — onStart arms, the hooks touch.
+  override async onStart(props?: Record<string, unknown>): Promise<void> {
+    await super.onStart(props);
+    await this.scheduleEvery(SESSION_PURGE_INTERVAL_S, "purgeIfIdle");
+  }
+
+  override async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
+    await super.onConnect(connection, ctx);
+    await this.touchSession();
+  }
+
+  override async onMessage(connection: Connection, message: WSMessage): Promise<void> {
+    await super.onMessage(connection, message);
+    await this.touchSession();
+  }
+
+  /** Record client activity and ensure the idle-purge schedule exists. */
+  async touchSession(): Promise<void> {
+    await this.ctx.storage.put(LAST_ACTIVITY_KEY, Date.now());
+    await this.scheduleEvery(SESSION_PURGE_INTERVAL_S, "purgeIfIdle");
+  }
+
+  /**
+   * Destroy the session object once it has been idle past the 7-day policy.
+   * Runs from the interval schedule; also reachable over RPC, which the
+   * tests use to drive it directly.
+   */
+  async purgeIfIdle(): Promise<void> {
+    if (!shouldPurgeSession(await this.ctx.storage.get<number>(LAST_ACTIVITY_KEY), Date.now())) {
+      return;
+    }
+    // Re-read immediately before destroying: a touch landing between the
+    // first read and the wipe must win. The remaining race is microseconds
+    // wide, and losing it only makes one client re-initialize its session.
+    if (!shouldPurgeSession(await this.ctx.storage.get<number>(LAST_ACTIVITY_KEY), Date.now())) {
+      return;
+    }
+    // deleteAll drops the rows and tables (including the Scheduler's own
+    // queue, so this schedule never fires again) but leaves the physical
+    // alarm armed — without the deleteAlarm the next fire would wake an
+    // empty object whose onStart would re-arm it into a zombie. This is the
+    // deliberate end of the object, not a feature coexisting with the
+    // scheduler, so raw storage calls are correct here where the SDK docs
+    // otherwise forbid them. destroy() would do the same plus abort the
+    // isolate, which only adds an uncatchable error to the logs per purge.
+    await this.ctx.storage.deleteAll();
+    await this.ctx.storage.deleteAlarm();
   }
 
   private registerResearchCreate(): void {
