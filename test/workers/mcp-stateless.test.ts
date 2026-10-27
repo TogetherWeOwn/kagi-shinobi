@@ -9,14 +9,14 @@
 //
 // These tests drive the real worker entry (src/index.ts) with raw JSON-RPC over
 // Streamable HTTP, so the bearer gate and the rate limit stay in front of the
-// MCP surface exactly as before. MCP_OBJECT is replaced with a namespace that
-// throws on any use: if /mcp ever routes to a session DO again, every case
-// here fails.
+// MCP surface exactly as before. MCP_OBJECT is an intentionally injected forbidden
+// legacy namespace, not a replacement for a current binding. It throws on any
+// use, guarding against accidental untyped runtime references to the retired DO.
 //
 // Runs in workerd: src/index.ts reaches cloudflare:workers.
 
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import worker from "../../src/index";
 
 const TOKEN = "stateless-admin-token";
@@ -182,6 +182,68 @@ describe("/mcp serves without a per-session Durable Object", () => {
     }
   });
 
+  it.each([
+    { label: "without a session header", sessionId: null },
+    { label: "with an old session id", sessionId: "streamable-http:0123456789abcdef" },
+  ])("answers DELETE /mcp $label without using a session DO or contacting Kagi", async ({ sessionId }) => {
+    // SDK 1.30.0 skips session validation when sessionIdGenerator is absent:
+    // DELETE closes the request's transport with 200 and no response body.
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+      throw new Error("DELETE /mcp must not contact an upstream");
+    });
+    try {
+      const headers = new Headers(auth);
+      if (sessionId !== null) headers.set("Mcp-Session-Id", sessionId);
+      const request = new Request("https://worker.test/mcp", { method: "DELETE", headers });
+      const ctx = createExecutionContext();
+      const res = await worker.fetch(request, testEnv(), ctx);
+      await waitOnExecutionContext(ctx);
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(res.status).toBe(200);
+      expect(res.headers.get("mcp-session-id")).toBeNull();
+      expect(res.body).toBeNull();
+      expect(await res.text()).toBe("");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("answers authenticated OPTIONS /mcp without using a session DO or contacting Kagi", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+      throw new Error("OPTIONS /mcp must not contact an upstream");
+    });
+    try {
+      const request = new Request("https://worker.test/mcp", {
+        method: "OPTIONS",
+        headers: {
+          ...auth,
+          Origin: "https://client.example",
+          "Access-Control-Request-Method": "POST",
+          "Access-Control-Request-Headers": "content-type, authorization",
+        },
+      });
+      const ctx = createExecutionContext();
+      const res = await worker.fetch(request, testEnv(), ctx);
+      await waitOnExecutionContext(ctx);
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(res.status).toBe(200);
+      expect(res.body).toBeNull();
+      expect(await res.text()).toBe("");
+      expect(res.headers.get("mcp-session-id")).toBeNull();
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+      expect(res.headers.get("Access-Control-Allow-Methods")?.split(/,\s*/)).toEqual(
+        expect.arrayContaining(["POST", "OPTIONS"]),
+      );
+      expect(res.headers.get("Access-Control-Allow-Headers")?.toLowerCase().split(/,\s*/)).toEqual(
+        expect.arrayContaining(["content-type", "authorization"]),
+      );
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("answers GET /mcp with 405: there is no server-to-client stream to hold open", async () => {
     // Spec: a server that offers no standalone SSE stream answers GET with 405.
     // Without this a GET would park an idle SSE response nothing ever writes to.
@@ -194,7 +256,12 @@ describe("/mcp serves without a per-session Durable Object", () => {
     await waitOnExecutionContext(ctx);
 
     expect(res.status).toBe(405);
-    expect(res.headers.get("Allow")).toContain("POST");
+    expect(res.body).toBeNull();
+    expect(await res.text()).toBe("");
+    expect.soft(res.headers.get("Allow")).toBe("POST, DELETE, OPTIONS");
+    // agents 0.28.1 WorkerTransport.getCorsHeaders() non-preflight defaults.
+    expect.soft(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect.soft(res.headers.get("Access-Control-Expose-Headers")).toBe("mcp-session-id");
   });
 });
 

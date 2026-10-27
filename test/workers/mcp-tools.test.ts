@@ -26,7 +26,8 @@ const { createKagiClient, getResearchStub } = vi.hoisted(() => ({
 vi.mock("../../src/kagi/client.js", () => ({ createKagiClient }));
 vi.mock("../../src/research/run.js", () => ({ getResearchStub }));
 
-const { KagiMcpAgent, registerKagiMcp } = await import("../../src/mcp");
+const mcp = await import("../../src/mcp");
+const { registerKagiMcp } = mcp;
 
 interface McpToolResult {
   content: Array<{ type: "text"; text: string }>;
@@ -948,28 +949,10 @@ describe("result cache wiring", () => {
   });
 });
 
-// ADR 0020: KagiMcpAgent is no longer routed to; it survives only until the
-// deleted_classes migration. Until then it must still register the same
-// surface, so a stray request that reaches it gets the real tools, not an
-// empty server.
-describe("the retained KagiMcpAgent class", () => {
-  it("registers through the same function as the stateless route", async () => {
-    createKagiClient.mockReturnValue(fakeClient("scrape"));
-    const tools: string[] = [];
-    const capture = (name: string) => void tools.push(name);
-    const agent = Object.create(KagiMcpAgent.prototype) as { server: unknown; init: () => Promise<void> };
-    agent.server = { tool: capture, registerTool: capture, resource: () => {}, prompt: () => {} };
-    Object.defineProperty(agent, "env", { value: env, configurable: true });
-    const waitUntil = vi.fn();
-    Object.defineProperty(agent, "ctx", { value: { waitUntil }, configurable: true });
-
-    await agent.init();
-    const opts = createKagiClient.mock.calls.at(-1)![1] as { waitUntil: (p: Promise<unknown>) => void };
-    const work = Promise.resolve();
-    opts.waitUntil(work);
-
-    const { tools: viaFunction } = await buildAgent("scrape");
-    expect(tools.sort()).toEqual([...viaFunction.keys()].sort());
-    expect(waitUntil).toHaveBeenCalledWith(work);
+// ADR 0020: migration v5 deletes KagiMcpAgent. The stateless registration
+// matrix and request waitUntil wiring remain covered above.
+describe("the retired KagiMcpAgent class", () => {
+  it("is no longer exported by the MCP module", () => {
+    expect(mcp).not.toHaveProperty("KagiMcpAgent");
   });
 });

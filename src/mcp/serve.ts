@@ -27,7 +27,15 @@ export async function serveMcp(request: Request, env: Env, ctx: ExecutionContext
     // No body: SDK clients treat a 405 here as "no stream offered" and drop
     // the response unread, so a body would only be written into a closed
     // connection.
-    return new Response(null, { status: 405, headers: { Allow: "POST, DELETE, OPTIONS" } });
+    return new Response(null, {
+      status: 405,
+      headers: {
+        Allow: "POST, DELETE, OPTIONS",
+        // Match WorkerTransport's non-preflight CORS response defaults.
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "mcp-session-id",
+      },
+    });
   }
   const server = createKagiMcpServer(env, (p) => ctx.waitUntil(p));
   return createLegacyMcpHandler(server, { route: MCP_ROUTE })(request, env, ctx);

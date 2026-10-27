@@ -24,8 +24,9 @@ editing one falsifies the other.
 ## Stack
 
 - TypeScript (ES2022, `strict`, `noUnusedLocals`, `noUnusedParameters`), ESM only, no JS
-- Cloudflare Workers — Durable Objects (`ResearchRun`, `Meter`, `ResultCache`; `KagiMcpAgent` is retained
-  but unrouted: `/mcp` builds one `McpServer` per request, ADR 0020), KV (`TOKEN_KV`), Browser Rendering
+- Cloudflare Workers — Durable Objects (`ResearchRun`, `Meter`, `ResultCache`), KV (`TOKEN_KV`),
+  Browser Rendering. `/mcp` builds one `McpServer` per request; migration v5 deletes the orphaned
+  `KagiMcpAgent` namespace and its storage irreversibly (ADR 0020).
 - `@modelcontextprotocol/sdk` + `agents` for the MCP surface; `zod` for schemas; `cheerio` for scrape parsing
 - Vitest 4 with two projects: `unit` (pure logic, Node) and `workers`
   (`@cloudflare/vitest-pool-workers`, workerd via Miniflare). Anything touching a

@@ -16,7 +16,6 @@
 
   "durable_objects": {
     "bindings": [
-      { "name": "MCP_OBJECT", "class_name": "KagiMcpAgent" },
       { "name": "RESEARCH_RUN", "class_name": "ResearchRun" },
       // Serializes the per-bearer rate counter and the monthly spend counter.
       // See docs/adr/0006-serialize-rate-and-spend-counters.md.
@@ -31,7 +30,9 @@
     { "tag": "v1", "new_sqlite_classes": ["KagiMcpAgent"] },
     { "tag": "v2", "new_sqlite_classes": ["ResearchRun"] },
     { "tag": "v3", "new_sqlite_classes": ["Meter"] },
-    { "tag": "v4", "new_sqlite_classes": ["ResultCache"] }
+    { "tag": "v4", "new_sqlite_classes": ["ResultCache"] },
+    // Irreversible: removes the unused session namespace and all its storage.
+    { "tag": "v5", "deleted_classes": ["KagiMcpAgent"] }
   ],
 
   // Hourly purge of expired result-cache entries (ADR 0017): Kagi results

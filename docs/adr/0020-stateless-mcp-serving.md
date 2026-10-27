@@ -49,8 +49,9 @@ new servers at a per-request stateless handler.
   SSE stream) instead of parking an SSE response nothing writes to.
 - The bearer gate, client-key scoping and per-bearer rate limit stay in front
   of `/mcp` in `src/index.ts`, exactly where they were.
-- `KagiMcpAgent` stays exported, delegating to the same `registerKagiMcp()`,
-  because `wrangler.jsonc` still binds `MCP_OBJECT` to it.
+- The orphaned `KagiMcpAgent` class, export and `MCP_OBJECT` binding are
+  removed. Migration v5 deletes the namespace and all its stored sessions;
+  `ResearchRun`, `Meter` and `ResultCache` and their bindings are unchanged.
 
 ## Consequences
 
@@ -64,13 +65,24 @@ new servers at a per-request stateless handler.
 - Each request pays for registering ~15 tools, 4 resources and 5 prompts.
   That is in-isolate object construction, cheaper than the DO round trip and
   WebSocket bridge it replaces.
-- **One-time cleanup (follow-up, not in this change).** The 25,967 existing
-  objects are not deleted by this ADR. Once this has run in production for a
-  few days, a follow-up removes the `MCP_OBJECT` binding and the class and
-  adds `{ "tag": "v5", "deleted_classes": ["KagiMcpAgent"] }` to
-  `wrangler.jsonc`'s migrations; Cloudflare deletes every object of a deleted
-  class together with its storage. It is a separate step because it is
-  irreversible: after it, rolling back to a release that routes to
-  `KagiMcpAgent` needs a new class name, whereas until then a plain revert
-  restores the old path.
-- Rollback before the cleanup: revert the commit and redeploy.
+- **One-time cleanup (migration v5).** The unused session data does not need
+  keeping. `{ "tag": "v5", "deleted_classes": ["KagiMcpAgent"] }` in
+  `wrangler.jsonc` deletes every object of that class and its stored data on
+  deploy. This is irreversible; it does not delete cached results, research
+  runs, counters or KV data.
+- **Rollback boundary.** PR #75's plain-revert path ends when v5 is deployed.
+  Redeploying an earlier release cannot restore deleted sessions. Restoring
+  stateful serving would require a new class name and a forward migration,
+  not reverting the deletion. Stateless serving remains the recovery path.
+
+## Follow-ups
+
+- Move to SDK v2's `createMcpHandler` from `agents/mcp/server` separately,
+  with a registration/protocol contract review and the tool-schema snapshots
+  checked before changing the published wire contract. The cleanup does not
+  upgrade the SDK or change registration.
+- After deploy, confirm the `KagiMcpAgent` namespace storage is gone in the
+  Cloudflare dashboard or `durableObjectsStorageGroups` analytics
+  (`max.storedBytes`), and run one cached query to verify `ResultCache` still
+  works. A successful deploy dry-run proves the configuration builds, not that
+  remote storage is gone.
