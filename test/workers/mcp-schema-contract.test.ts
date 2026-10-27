@@ -26,7 +26,7 @@ const { createKagiClient, getResearchStub } = vi.hoisted(() => ({
 vi.mock("../../src/kagi/client.js", () => ({ createKagiClient }));
 vi.mock("../../src/research/run.js", () => ({ getResearchStub }));
 
-const { KagiMcpAgent } = await import("../../src/mcp");
+const { KagiMcpSession } = await import("../../src/mcp");
 
 interface ToolDescriptor {
   name: string;
@@ -48,7 +48,7 @@ async function connectAgent(
   createKagiClient.mockReturnValue({ mode, ...clientOverrides });
 
   const server = new McpServer({ name: "kagi-shinobi", version: "test" });
-  const agent = Object.create(KagiMcpAgent.prototype) as {
+  const agent = Object.create(KagiMcpSession.prototype) as {
     server: McpServer;
     init: () => Promise<void>;
   };

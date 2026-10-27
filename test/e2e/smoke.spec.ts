@@ -95,7 +95,7 @@ test.describe("a real MCP client completes a Streamable-HTTP session", () => {
   //
   // There is no exported source of truth to import — gating is implicit in the
   // `this.server.tool(...)` calls in src/mcp.ts, guarded by the capability
-  // checks that KagiMcpAgent.init() applies per mode. When this list fails,
+  // checks that KagiMcpSession.init() applies per mode. When this list fails,
   // re-derive it from there and from mcp-tools.test.ts's "hides the api-only
   // tools in scrape mode" case. Do not loosen the assertion to make it pass:
   // an exact set is the only version of this test that catches a tool

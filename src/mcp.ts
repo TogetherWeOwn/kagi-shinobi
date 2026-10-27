@@ -104,7 +104,7 @@ const RESEARCH_CANCEL_DESCRIPTION =
   "Cancel a running research job. Idempotent. Any partial output collected " +
   "so far remains available via kagi_research_get_output.";
 
-export class KagiMcpAgent extends McpAgent<Env> {
+export class KagiMcpSession extends McpAgent<Env> {
   server = new McpServer({
     name: "kagi-shinobi",
     version: "0.2.0-dev",

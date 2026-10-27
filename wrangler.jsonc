@@ -16,7 +16,7 @@
 
   "durable_objects": {
     "bindings": [
-      { "name": "MCP_OBJECT", "class_name": "KagiMcpAgent" },
+      { "name": "MCP_OBJECT", "class_name": "KagiMcpSession" },
       { "name": "RESEARCH_RUN", "class_name": "ResearchRun" },
       // Serializes the per-bearer rate counter and the monthly spend counter.
       // See docs/adr/0006-serialize-rate-and-spend-counters.md.
@@ -31,7 +31,18 @@
     { "tag": "v1", "new_sqlite_classes": ["KagiMcpAgent"] },
     { "tag": "v2", "new_sqlite_classes": ["ResearchRun"] },
     { "tag": "v3", "new_sqlite_classes": ["Meter"] },
-    { "tag": "v4", "new_sqlite_classes": ["ResultCache"] }
+    { "tag": "v4", "new_sqlite_classes": ["ResultCache"] },
+    // v5+v6 are the one-time backfill for stale MCP session storage: v5
+    // creates the KagiMcpSession namespace (the renamed KagiMcpAgent, now
+    // with a 7-day idle purge — see src/mcp/session-purge.ts), and v6
+    // deletes the old KagiMcpAgent namespace outright. A per-object
+    // schedule cannot reach objects that never wake again, and the
+    // Cloudflare object list returns hex IDs whose session names are not
+    // recoverable, so there is no touch-each-object sweep; the delete
+    // migration wipes all ~26k stale objects at deploy. Active clients see
+    // one 404 and re-initialize a fresh session, per the MCP spec.
+    { "tag": "v5", "new_sqlite_classes": ["KagiMcpSession"] },
+    { "tag": "v6", "deleted_classes": ["KagiMcpAgent"] }
   ],
 
   // Hourly purge of expired result-cache entries (ADR 0017): Kagi results

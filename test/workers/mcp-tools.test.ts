@@ -1,6 +1,6 @@
 // MCP tool surface — registration matrix and handler behavior.
 //
-// KagiMcpAgent is a Durable Object, and its tool handlers are closures handed
+// KagiMcpSession is a Durable Object, and its tool handlers are closures handed
 // to an McpServer inside init(). Rather than stand up the DO, the prototype is
 // instantiated directly and given a fake server that captures those closures,
 // which the tests then call. That keeps the assertions on what the handlers do
@@ -26,7 +26,7 @@ const { createKagiClient, getResearchStub } = vi.hoisted(() => ({
 vi.mock("../../src/kagi/client.js", () => ({ createKagiClient }));
 vi.mock("../../src/research/run.js", () => ({ getResearchStub }));
 
-const { KagiMcpAgent } = await import("../../src/mcp");
+const { KagiMcpSession } = await import("../../src/mcp");
 
 interface McpToolResult {
   content: Array<{ type: "text"; text: string }>;
@@ -114,7 +114,7 @@ async function buildAgent(mode = "scrape", clientOverrides: Record<string, unkno
     prompt: () => {},
   };
 
-  const agent = Object.create(KagiMcpAgent.prototype) as {
+  const agent = Object.create(KagiMcpSession.prototype) as {
     server: unknown;
     init: () => Promise<void>;
   };

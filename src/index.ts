@@ -7,7 +7,7 @@ import { authenticate, isClientScopedPath } from "./util/auth.js";
 import { jsonError } from "./util/errors.js";
 import { handleSearch, handleSearchGet, handleSummarize } from "./rest.js";
 import { handleAdminRefresh, handleAdminToken, handleHealth } from "./token/admin.js";
-import { KagiMcpAgent } from "./mcp.js";
+import { KagiMcpSession } from "./mcp.js";
 import { landingResponse } from "./landing.js";
 import { checkAndIncrement, checkClientRate } from "./util/ratelimit.js";
 import { ResearchRun } from "./research/run.js";
@@ -15,7 +15,7 @@ import { Meter } from "./meter/meter.js";
 import { ResultCache } from "./cache/store.js";
 import { resultCacheStub } from "./cache/read-through.js";
 
-export { KagiMcpAgent, ResearchRun, Meter, ResultCache };
+export { KagiMcpSession, ResearchRun, Meter, ResultCache };
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -73,7 +73,7 @@ export default {
     if (path === "/mcp" || path.startsWith("/mcp/")) {
       // McpAgent.serve() handles both the SSE and Streamable HTTP wire
       // protocols; McpAgent.serveSSE is the SSE-only variant. Prefer serve().
-      return KagiMcpAgent.serve("/mcp").fetch(request, env, ctx);
+      return KagiMcpSession.serve("/mcp").fetch(request, env, ctx);
     }
 
     if (path === "/search" && method === "POST") {

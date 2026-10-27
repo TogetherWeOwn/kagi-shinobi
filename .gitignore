@@ -22,3 +22,6 @@ __pycache__/
 .claude/ecc-tools.json
 .claude/homunculus/
 .claude/reviews/
+
+# Skill-run scratch (sdd ledgers, review packages). Never commit.
+.superpowers/
