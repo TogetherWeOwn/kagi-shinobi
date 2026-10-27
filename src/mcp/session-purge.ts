@@ -15,6 +15,13 @@
 // session that goes idle just after a check waits almost two intervals, so
 // stale storage lingers up to ~14 days instead of ~7. Steady state is still
 // ~10 days of session writes, far under the plan's 5 GB.
+//
+// One known tail: a client retrying a destroyed session's ID gets a 404
+// before any connection is created, so the re-woken empty object arms a
+// schedule but never records a touch — and is then kept forever by the
+// keep-on-missing rule. Each such tombstone is one schedule row (bytes),
+// so the object count may regrow slowly while storage stays flat. That is
+// not a leak recurrence.
 
 /** Seconds between idle-purge checks. The Agents Scheduler caps this at 30 days. */
 export const SESSION_PURGE_INTERVAL_S = 7 * 24 * 3600;

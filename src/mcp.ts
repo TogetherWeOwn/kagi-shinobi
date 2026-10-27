@@ -153,8 +153,10 @@ export class KagiMcpSession extends McpAgent<Env> {
   // Idle-session purge: every activity re-arms an idempotent 7-day interval
   // schedule, and the schedule wipes the object once it has been idle past
   // the policy (src/mcp/session-purge.ts). Streamable-HTTP traffic reaches
-  // the object as connections (one per POST/GET/DELETE) plus messages, so
-  // onConnect + onMessage together cover every client activity.
+  // the object as connections (one per POST/GET) plus messages, so
+  // onConnect + onMessage together cover every client activity. DELETE
+  // terminates via _cf_terminateSession (pure RPC, no connection) and must
+  // not refresh the idle timer anyway — that session is ending.
   //
   // onStart deliberately does NOT record activity: alarm wakes run startup
   // too, and a touch there would make every purge check find a fresh
@@ -197,13 +199,16 @@ export class KagiMcpSession extends McpAgent<Env> {
       return;
     }
     // deleteAll drops the rows and tables (including the Scheduler's own
-    // queue, so this schedule never fires again) but leaves the physical
-    // alarm armed — without the deleteAlarm the next fire would wake an
-    // empty object whose onStart would re-arm it into a zombie. This is the
-    // deliberate end of the object, not a feature coexisting with the
-    // scheduler, so raw storage calls are correct here where the SDK docs
-    // otherwise forbid them. destroy() would do the same plus abort the
-    // isolate, which only adds an uncatchable error to the logs per purge.
+    // queue, so this schedule never fires again) and — at this worker's
+    // compatibility date (2026-07-01, past the 2026-02-24 behavior change)
+    // the physical alarm too. The deleteAlarm is belt-and-braces for older
+    // runtimes: a lingering alarm would wake the empty object, whose
+    // onStart would re-arm it into a zombie that wakes every 7 days
+    // forever. This is the deliberate end of the object, not a feature
+    // coexisting with the scheduler, so raw storage calls are correct here
+    // where the SDK docs otherwise forbid them. destroy() would do the
+    // same plus abort the isolate, which only adds an uncatchable error to
+    // the logs per purge.
     await this.ctx.storage.deleteAll();
     await this.ctx.storage.deleteAlarm();
   }

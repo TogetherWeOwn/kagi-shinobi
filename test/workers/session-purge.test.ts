@@ -96,6 +96,9 @@ describe("purgeIfIdle", () => {
     const stale = Date.now() - SESSION_IDLE_TTL_MS - 60_000;
     await runInDurableObject(stub, async (_instance, state) => {
       await state.storage.put(LAST_ACTIVITY_KEY, stale);
+      // There is an alarm to cancel: without this pre-state, the null
+      // below would pass vacuously.
+      expect(await state.storage.getAlarm()).toBeTypeOf("number");
     });
 
     await stub.purgeIfIdle();
@@ -106,6 +109,11 @@ describe("purgeIfIdle", () => {
         .exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'")
         .toArray();
       expect(tables.map((t) => t.name)).not.toContain("cf_agents_jobs");
+      // No alarm may survive the purge: a lingering one would wake the
+      // empty object, whose onStart would re-arm it into a zombie that
+      // wakes every 7 days forever (no timestamp means keep). deleteAll
+      // already disarms at this compat date; this pins the end state.
+      expect(await state.storage.getAlarm()).toBeNull();
     });
   });
 });
