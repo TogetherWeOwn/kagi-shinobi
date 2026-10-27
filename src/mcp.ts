@@ -2,9 +2,8 @@
 //
 // ADR 0020: /mcp is served statelessly — src/mcp/serve.ts builds one McpServer
 // per request with createKagiMcpServer() and hands it to a sessionless
-// transport. No Durable Object is involved. KagiMcpAgent below is retained only
-// so the MCP_OBJECT binding still names a class until the follow-up
-// `deleted_classes` migration drops it together with its stored sessions.
+// transport. No Durable Object is involved; migration v5 deletes the orphaned
+// KagiMcpAgent namespace together with its stored sessions.
 //
 // S2 wired the KagiClient facade so the mode dispatcher runs on every call.
 // S3 added the official API endpoint impls. S4 registers the differentiated
@@ -12,7 +11,6 @@
 // availability — tools whose active-mode support says "unavailable" never
 // appear in tools/list.
 
-import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Env } from "./env.js";
@@ -127,20 +125,6 @@ export function createKagiMcpServer(env: Env, waitUntil: WaitUntil): McpServer {
  */
 export function registerKagiMcp(server: McpServer, env: Env, waitUntil: WaitUntil): void {
   new KagiMcpRegistrar(server, env).register(waitUntil);
-}
-
-/**
- * Retained Durable Object class, no longer routed to (ADR 0020). It must keep
- * existing while wrangler.jsonc binds MCP_OBJECT to it; removing it is a
- * separate `deleted_classes` migration, which also deletes the stored session
- * objects. init() delegates so the class stays a working McpAgent until then.
- */
-export class KagiMcpAgent extends McpAgent<Env> {
-  server = new McpServer(SERVER_INFO);
-
-  async init(): Promise<void> {
-    registerKagiMcp(this.server, this.env, (p) => this.ctx.waitUntil(p));
-  }
 }
 
 class KagiMcpRegistrar {
