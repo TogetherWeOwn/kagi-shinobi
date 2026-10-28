@@ -4,6 +4,11 @@
 // shape mirrors the canonical types.ts contracts so REST callers get the
 // same structured data as MCP callers.
 
+import {
+  DEFAULT_MAX_REQUEST_BODY_SIZE,
+  readRequestBody,
+  requestBodyTooLargeMessage,
+} from "@modelcontextprotocol/sdk/server/requestBody.js";
 import type { Env } from "./env.js";
 import { jsonError, jsonOk } from "./util/errors.js";
 import { createKagiClient, type KagiClient, type KagiClientOptions } from "./kagi/client.js";
@@ -48,12 +53,8 @@ export async function handleSearch(
   env: Env,
   ctx?: ExecutionContext,
 ): Promise<Response> {
-  let body: SearchBody;
-  try {
-    body = (await request.json()) as SearchBody;
-  } catch {
-    return jsonError(400, "invalid-json", "Body must be JSON");
-  }
+  const body = await readRestJson<SearchBody>(request);
+  if (body instanceof Response) return body;
 
   const { queries, limit, impl, engine, max_age_s } = body;
   if (!Array.isArray(queries) || queries.length === 0) {
@@ -145,12 +146,8 @@ export async function handleSummarize(
   env: Env,
   ctx?: ExecutionContext,
 ): Promise<Response> {
-  let body: SummarizeBody;
-  try {
-    body = (await request.json()) as SummarizeBody;
-  } catch {
-    return jsonError(400, "invalid-json", "Body must be JSON");
-  }
+  const body = await readRestJson<SummarizeBody>(request);
+  if (body instanceof Response) return body;
 
   const { url, summary_type, target_language, impl, max_age_s } = body;
   if (typeof url !== "string" || url.trim().length === 0) {
@@ -198,6 +195,21 @@ export async function handleSummarize(
     return jsonOk({ ok: true, mode: client.mode, data: publicResponseData(data) });
   } catch (err) {
     return kagiErrorResponse(err);
+  }
+}
+
+/** ADR 0022: query counts cannot bound the input parsed before validation. */
+async function readRestJson<T>(request: Request): Promise<T | Response> {
+  try {
+    const body = await readRequestBody(request);
+    if (body.tooLarge) {
+      await request.body?.cancel().catch(() => undefined);
+      return jsonError(413, "payload-too-large", requestBodyTooLargeMessage(DEFAULT_MAX_REQUEST_BODY_SIZE));
+    }
+    return JSON.parse(body.text) as T;
+  } catch {
+    await request.body?.cancel().catch(() => undefined);
+    return jsonError(400, "invalid-json", "Body must be JSON");
   }
 }
 

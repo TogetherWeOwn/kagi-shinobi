@@ -26,5 +26,6 @@ than quietly rewritten.
 | [0017](0017-result-cache.md) | Read-through result cache that works on workers.dev | accepted | 2026-10-02 |
 | [0018](0018-automated-production-deploy-gate.md) | Automated production deploy gate | accepted | 2026-10-04 |
 | [0019](0019-uncapped-search-volume-with-fail-open-pacer.md) | Uncapped search volume with a fail-open 2/s pacer | accepted | 2026-10-14 |
-| [0020](0020-stateless-mcp-serving.md) | Serve /mcp statelessly, without a per-session Durable Object | accepted | 2026-10-27 |
+| [0020](0020-stateless-mcp-serving.md) | Serve /mcp statelessly, without a per-session Durable Object | partially superseded by 0022 | 2026-10-27 |
 | [0021](0021-rest-error-disclosure.md) | Restrict REST error disclosure | accepted | 2026-10-28 |
+| [0022](0022-bounded-http-admission.md) | Bound input before parsing or dispatch | accepted | 2026-10-28 |
