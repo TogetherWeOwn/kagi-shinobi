@@ -162,7 +162,15 @@ export function extractAnswerAndReferences(
   if (references.length === 0) {
     $("a[href^='http']").each((_, el) => {
       const href = $(el).attr("href") ?? "";
-      if (href.startsWith("https://kagi.com") || href.startsWith("http://kagi.com")) return;
+      let url: URL;
+      try {
+        url = new URL(href);
+      } catch {
+        return;
+      }
+      if (url.protocol !== "http:" && url.protocol !== "https:") return;
+      const hostname = url.hostname.replace(/\.$/, "");
+      if (hostname === "kagi.com" || hostname.endsWith(".kagi.com")) return;
       pushRef($, el, references, seen);
     });
   }

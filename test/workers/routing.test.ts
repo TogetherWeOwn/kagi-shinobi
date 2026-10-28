@@ -6,7 +6,7 @@
 // only" (ADR 0013). Unit tests on requireBearer alone cannot prove that — they show
 // the gate works, not that it is actually *wired in front of* each route.
 //
-// Runs under @cloudflare/vitest-pool-workers because src/index.ts imports
+// Runs under @cloudflare/vitest-plugin because src/index.ts imports
 // src/research/run.ts, which imports `cloudflare:workers`.
 
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";

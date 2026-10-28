@@ -115,6 +115,20 @@ describe("extractAnswerAndReferences", () => {
     expect(out.references[0].url).toBe("https://external.example/x");
   });
 
+  it("filters Kagi hostnames without dropping lookalike external hosts", () => {
+    const html = `
+      <a href="http://kagi.com:8080/settings">internal port</a>
+      <a href="https://KAGI.COM./settings">internal canonical</a>
+      <a href="https://help.kagi.com/settings">internal subdomain</a>
+      <a href="https://kagi.com.evil.example/x">lookalike</a>
+      <a href="https://kagi.com@evil.example/x">userinfo</a>
+      <a href="https://[invalid">invalid</a>`;
+    expect(extractAnswerAndReferences(html, "").references.map((r) => r.url)).toEqual([
+      "https://kagi.com.evil.example/x",
+      "https://kagi.com@evil.example/x",
+    ]);
+  });
+
   it("de-duplicates repeated citation URLs", () => {
     const html = `
       <p>Fact one<sup><a href="https://src.example/a">1</a></sup>.</p>

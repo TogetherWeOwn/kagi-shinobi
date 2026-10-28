@@ -14,7 +14,7 @@
 //
 // Keeping the fast pure suite in Node is deliberate: workerd start-up
 // dominates runtime, and most of this codebase is parsing.
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({

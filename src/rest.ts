@@ -7,7 +7,7 @@
 import type { Env } from "./env.js";
 import { jsonError, jsonOk } from "./util/errors.js";
 import { createKagiClient, type KagiClient, type KagiClientOptions } from "./kagi/client.js";
-import { KagiError, type KagiErrorDetail } from "./kagi/errors.js";
+import { KagiError, KagiTimeoutError, type KagiErrorDetail, type KagiErrorKind } from "./kagi/errors.js";
 import { KAGI_ERROR_STATUS, restErrorCode } from "./kagi/http.js";
 import { isSupportedLanguage } from "./kagi/languages.js";
 import { logWarn } from "./util/log.js";
@@ -133,7 +133,7 @@ export async function handleSearch(
       results.push({
         query: normQueries[i],
         ok: false,
-        error: reasonToString(s.reason),
+        error: publicErrorMessage(s.reason),
       });
     }
   }
@@ -226,7 +226,7 @@ function normalizeEngine(v: unknown): SearchEngine | undefined | "__invalid__" {
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms);
+    const t = setTimeout(() => reject(new KagiTimeoutError(ms)), ms);
     p.then(
       (v) => {
         clearTimeout(t);
@@ -240,9 +240,36 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-function reasonToString(reason: unknown): string {
-  if (reason instanceof Error) return `${reason.name}: ${reason.message}`;
-  return String(reason);
+// Exception messages and detail may contain upstream bodies or stack traces.
+// Only a closed vocabulary and numeric operational fields cross the REST boundary.
+const PUBLIC_ERROR_MESSAGES: Record<KagiErrorKind, string> = {
+  auth: "Authentication with Kagi failed",
+  captcha: "Kagi requires a challenge",
+  parse: "Unable to parse the upstream response",
+  markup_changed: "Upstream response format changed",
+  upstream: "Upstream request failed",
+  rate_limit: "Rate limit exceeded",
+  budget_exceeded: "API cost cap reached",
+  unsupported_in_mode: "Operation unavailable in this mode",
+  confirm_required: "Confirmation required",
+  not_configured: "Service not configured",
+  timeout: "Request timed out",
+};
+
+function publicErrorMessage(err: unknown): string {
+  if (err instanceof KagiError && Object.hasOwn(PUBLIC_ERROR_MESSAGES, err.kind)) {
+    return PUBLIC_ERROR_MESSAGES[err.kind];
+  }
+  return "Internal server error";
+}
+
+function publicErrorDetail(detail: KagiErrorDetail): KagiErrorDetail {
+  const safe: KagiErrorDetail = {};
+  for (const key of ["status", "retry_after", "spent_cents", "cap_cents", "ms", "cost_cents"]) {
+    const value = detail[key];
+    if (typeof value === "number" && Number.isFinite(value)) safe[key] = value;
+  }
+  return safe;
 }
 
 // ADR 0012: status and code both come from `kind`, so the subclass a caller
@@ -259,16 +286,14 @@ export function kagiErrorResponse(err: unknown): Response {
     // `new Response(body, { status: undefined })` returns **200**, so without
     // this an unmapped kind would answer an error with a success status.
     const status = KAGI_ERROR_STATUS[err.kind] ?? 500;
-    return jsonError(status, restErrorCode(err.kind), err.message, {
-      detail: err.detail,
-      headers: retryAfterHeader(err.detail),
+    const detail = publicErrorDetail(err.detail);
+    return jsonError(status, restErrorCode(err.kind), publicErrorMessage(err), {
+      detail,
+      headers: retryAfterHeader(detail),
     });
   }
-  const msg = err instanceof Error ? err.message : String(err);
-  // `error`, not `msg` — logWarn spreads fields last, so a field named `msg`
-  // would overwrite the log message and leave the line without context.
-  logWarn("unhandled error in REST handler", { error: msg });
-  return jsonError(500, "internal", msg);
+  logWarn("unhandled error in REST handler");
+  return jsonError(500, "internal", "Internal server error");
 }
 
 // Latent today: KagiRateLimitError is the only error declaring retry_after, and

@@ -325,11 +325,11 @@ describe("handleSearch dispatch", () => {
     expect(res.status).toBe(200);
     expect(body.results).toMatchObject([
       { query: "good", ok: true },
-      { query: "bad", ok: false, error: "KagiUpstreamError: HTTP 500: Server Error" },
+      { query: "bad", ok: false, error: "Upstream request failed" },
     ]);
   });
 
-  it("stringifies a non-Error rejection reason", async () => {
+  it("does not expose a non-Error rejection reason", async () => {
     createKagiClient.mockReturnValue(
       fakeClient({ search: vi.fn().mockRejectedValue("plain string") }),
     );
@@ -337,7 +337,7 @@ describe("handleSearch dispatch", () => {
     const res = await handleSearch(post({ queries: ["q"] }), makeEnv());
     const [first] = (await json(res)).results as Array<{ error: string }>;
 
-    expect(first.error).toBe("plain string");
+    expect(first.error).toBe("Internal server error");
   });
 
   it("times out a query that never settles", async () => {
@@ -350,7 +350,7 @@ describe("handleSearch dispatch", () => {
       const body = await json(await pending);
 
       expect(body.results).toMatchObject([{ query: "hangs", ok: false }]);
-      expect((body.results as Array<{ error: string }>)[0].error).toMatch(/Timeout after 15000ms/);
+      expect((body.results as Array<{ error: string }>)[0].error).toBe("Request timed out");
     } finally {
       vi.useRealTimers();
     }
@@ -516,6 +516,37 @@ describe("handleSummarize dispatch", () => {
 // it: every typed subclass must agree with the bare base class carrying the
 // same kind. That equivalence is what was broken before — `KagiUpstreamError`
 // returned 502 while `new KagiError("upstream", ...)` returned 500.
+describe("REST error disclosure", () => {
+  it("does not expose unexpected exceptions or their stack traces", async () => {
+    const secret = "private stack trace at /srv/internal.ts:42";
+    const res = kagiErrorResponse(new Error(secret));
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain(secret);
+  });
+
+  it("does not expose upstream response bodies in mapped errors", async () => {
+    const secret = "private stack trace at /srv/upstream.ts:42";
+    const res = kagiErrorResponse(new KagiUpstreamError(500, secret));
+    expect(res.status).toBe(502);
+    expect(await res.text()).not.toContain(secret);
+  });
+
+  it("does not expose arbitrary typed error messages or detail fields", async () => {
+    const secret = "private stack trace at /srv/typed.ts:42";
+    const res = kagiErrorResponse(new KagiError("parse", secret, { nested: secret }));
+    expect(res.status).toBe(502);
+    expect(await res.text()).not.toContain(secret);
+  });
+
+  it("does not expose rejection details in batched search", async () => {
+    const secret = "private stack trace at /srv/search.ts:42";
+    createKagiClient.mockReturnValue(fakeClient({ search: vi.fn().mockRejectedValue(new Error(secret)) }));
+    const res = await handleSearch(post({ queries: ["q"] }), makeEnv());
+    expect(res.status).toBe(200);
+    expect(await res.text()).not.toContain(secret);
+  });
+});
+
 describe("kagiErrorResponse", () => {
   it.each([
     [new KagiNotConfiguredError("nope"), 503, "kagi-not-configured"],
@@ -566,7 +597,6 @@ describe("kagiErrorResponse", () => {
 
     expect((await errorBody(res)).error.detail).toEqual({
       status: 503,
-      status_text: "Unavailable",
     });
   });
 
@@ -595,20 +625,20 @@ describe("kagiErrorResponse", () => {
     expect((await json(res)).error).toMatchObject({ code: "kagi-bogus" });
   });
 
-  it("maps a plain Error to a 500 with its message", async () => {
+  it("maps a plain Error to a generic 500", async () => {
     const res = kagiErrorResponse(new Error("something snapped"));
 
     expect(res.status).toBe(500);
     expect((await json(res)).error).toMatchObject({
       code: "internal",
-      message: "something snapped",
+      message: "Internal server error",
     });
   });
 
-  it("stringifies a thrown non-Error", async () => {
+  it("does not expose a thrown non-Error", async () => {
     const res = kagiErrorResponse("just a string");
 
     expect(res.status).toBe(500);
-    expect((await json(res)).error).toMatchObject({ code: "internal", message: "just a string" });
+    expect((await json(res)).error).toMatchObject({ code: "internal", message: "Internal server error" });
   });
 });
