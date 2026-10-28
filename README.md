@@ -83,7 +83,7 @@ error. The checked-in deployment configuration selects `scrape` explicitly.
 | `kagi_search_fetch` | Search `queries` (1–20); optional `limit` (1–50), `engine` (`kagi`, `searxng`, `auto`), `impl`, `response_format`, `max_age_s` | yes | yes | yes |
 | `kagi_summarizer` | Summarize a `url`; optional `summary_type` (`summary`, `takeaway`), `target_language`, `impl`, `max_age_s` | yes | yes | yes |
 | `kagi_small_web` | Search Small Web with optional `q` and `limit`; omitting `q` browses the public feed on the scrape path, but uses API search on the API path | yes | yes | yes |
-| `kagi_summarize_url` | Summarize a `url` with optional summarizer `engine`, `confirm_muriel`, `summary_type`, `target_language`, `impl`, `max_age_s` | yes | yes | yes |
+| `kagi_summarize_url` | Summarize a `url`; optional `engine` and `confirm_muriel` apply only on the API path; also accepts `summary_type`, `target_language`, `impl`, `max_age_s` | yes | yes | yes |
 | `kagi_fastgpt` | Answer a `query` with references; optional `cache`, `impl`, `max_age_s` | yes | yes | yes |
 | `kagi_personalized_rank` | Rerank `urls` (1–20); optional `q`, `rules`, `impl`; API ranking requires `q`, scrape ranking ignores `rules` | yes | yes | yes |
 | `kagi_research_create_run` | Start research for a `question`; optional `depth` (1–3, default 1), `budget_cents` (default 0), `allow_api` (default true); returns `run_id` | yes | yes | yes |
@@ -98,8 +98,9 @@ error. The checked-in deployment configuration selects `scrape` explicitly.
 The last four tools are omitted entirely in scrape mode. `kagi_search` and
 `kagi_list_lenses` are capability-table entries, **not registered MCP tools**.
 This is a principal-input inventory, not a replacement for the full schemas:
-read `tools/list` on your deployment for exact arguments, defaults and output
-schemas. It does not establish drop-in compatibility with upstream clients.
+read `tools/list` on your deployment for exact input schemas, defaults and
+any published output schema (currently only `kagi_search_fetch` publishes
+one). It does not establish drop-in compatibility with upstream clients.
 
 ### Execution gates and research limits
 
@@ -112,13 +113,17 @@ schemas. It does not establish drop-in compatibility with upstream clients.
 - Hybrid prefers scrape for tools that support both implementations;
   API-only tools still use the API. Where offered, `impl` selects the path
   within the resolved mode. Search's `engine` instead selects Kagi, SearXNG
-  or automatic fallback; SearXNG requires its own configuration (see below).
+  or automatic fallback; search accepts `impl` only with `engine="kagi"`
+  (the default), rejecting it with `auto` or `searxng`. SearXNG requires its
+  own configuration (see below).
 - `MAX_API_CENTS_PER_MONTH=0` (the default) refuses new billable API calls,
   even if the tool is listed and an API key is present. Zero-cost result-cache
   hits and free paths are distinct from permission to spend. Listing a tool
   does not enable paid API use or relax the existing rate/spend controls.
-  Muriel summaries require `confirm_muriel=true` by default; confirmation
-  does not override the API cap.
+  Summarizer engine selection applies only on the API path; scrape uses its
+  default engine. Fresh Muriel API execution requires `confirm_muriel=true`
+  by default; a matching cached result needs no new spend confirmation.
+  Confirmation does not override the API cap.
 - Research create/wait/output/cancel are registered in every mode. A wait
   can time out while work continues, and cancellation is cooperative rather
   than an immediate terminal-state transition. Output exposes stored state;
