@@ -545,6 +545,84 @@ describe("REST error disclosure", () => {
     expect(res.status).toBe(200);
     expect(await res.text()).not.toContain(secret);
   });
+
+  it("redacts a custom KagiAuthError message in a direct error envelope", async () => {
+    const diagnostic = "private auth diagnostic: fixture-session-only";
+    const res = kagiErrorResponse(new KagiAuthError(diagnostic));
+    const body = await errorBody(res);
+
+    expect(res.status).toBe(401);
+    expect(body.error.code).toBe("kagi-auth");
+    expect(body.error.message.length).toBeGreaterThan(0);
+    expect(JSON.stringify(body)).not.toContain(diagnostic);
+  });
+
+  it("redacts a custom KagiAuthError in a batch without losing the successful query", async () => {
+    const diagnostic = "private auth diagnostic: fixture-session-only";
+    const search = vi.fn()
+      .mockRejectedValueOnce(new KagiAuthError(diagnostic))
+      .mockResolvedValueOnce(SEARCH_RESULT);
+    createKagiClient.mockReturnValue(fakeClient({ search }));
+
+    const res = await handleSearch(post({ queries: ["expired", "good"] }), makeEnv());
+    const body = await json(res);
+
+    expect(res.status).toBe(200);
+    expect(body.results).toMatchObject([
+      { query: "expired", ok: false, error: expect.any(String) },
+      { query: "good", ok: true, data: SEARCH_RESULT },
+    ]);
+    expect(JSON.stringify(body)).not.toContain(diagnostic);
+  });
+});
+
+// An allowed field name is not permission to serialize arbitrary values under
+// it. In particular, JSON would turn a nonfinite number into null, not omit it.
+describe.each(["status", "retry_after", "spent_cents", "cap_cents", "ms", "cost_cents"])(
+  "REST numeric detail guard: %s",
+  (key) => {
+    it.each([0, -1, 2.5])("retains the finite number %s", async (value) => {
+      const res = kagiErrorResponse(new KagiError("upstream", "private message", { [key]: value }));
+
+      expect((await errorBody(res)).error.detail).toEqual({ [key]: value });
+    });
+
+    it.each([
+      ["a numeric string", "503"],
+      ["a diagnostic string", "private detail diagnostic"],
+      ["an object", { diagnostic: "private detail diagnostic" }],
+      ["NaN", Number.NaN],
+      ["positive Infinity", Number.POSITIVE_INFINITY],
+      ["negative Infinity", Number.NEGATIVE_INFINITY],
+    ])("omits %s even under an allowed detail key", async (_label, value) => {
+      const res = kagiErrorResponse(new KagiError("upstream", "private message", { [key]: value }));
+
+      expect((await errorBody(res)).error).not.toHaveProperty("detail");
+    });
+  },
+);
+
+describe("REST numeric detail preservation", () => {
+  it("keeps finite siblings while dropping invalid allowed-key values", async () => {
+    const detail: Record<string, unknown> = {
+      status: 503,
+      retry_after: "private diagnostic",
+      spent_cents: { diagnostic: "private diagnostic" },
+      cap_cents: 100,
+      ms: 25,
+      cost_cents: Number.POSITIVE_INFINITY,
+    };
+    const res = kagiErrorResponse(new KagiError("upstream", "private message", detail));
+
+    expect((await errorBody(res)).error.detail).toEqual({ status: 503, cap_cents: 100, ms: 25 });
+  });
+
+  it("carries the exact timeout duration rather than a default or another numeric field", async () => {
+    const res = kagiErrorResponse(new KagiTimeoutError(1234));
+
+    expect(res.status).toBe(504);
+    expect((await errorBody(res)).error.detail).toEqual({ ms: 1234 });
+  });
 });
 
 describe("kagiErrorResponse", () => {

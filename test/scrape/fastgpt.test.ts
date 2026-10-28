@@ -129,6 +129,22 @@ describe("extractAnswerAndReferences", () => {
     ]);
   });
 
+  it("rejects a parseable non-web scheme in fallback anchors while keeping HTTP(S) sources", () => {
+    // httpx: passes the href^=http selector and URL parsing. Only the protocol
+    // guard excludes it; a malformed URL would exercise a different branch.
+    const html = `
+      <p>Sources:
+        <a href="httpx://nonweb.example/source">Not a web source</a>
+        <a href="https://source.example/secure">HTTPS source</a>
+        <a href="http://source.example/plain">HTTP source</a>
+      </p>`;
+
+    expect(extractAnswerAndReferences(html, "").references.map((r) => r.url)).toEqual([
+      "https://source.example/secure",
+      "http://source.example/plain",
+    ]);
+  });
+
   it("de-duplicates repeated citation URLs", () => {
     const html = `
       <p>Fact one<sup><a href="https://src.example/a">1</a></sup>.</p>
