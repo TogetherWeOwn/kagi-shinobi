@@ -115,6 +115,36 @@ describe("extractAnswerAndReferences", () => {
     expect(out.references[0].url).toBe("https://external.example/x");
   });
 
+  it("filters Kagi hostnames without dropping lookalike external hosts", () => {
+    const html = `
+      <a href="http://kagi.com:8080/settings">internal port</a>
+      <a href="https://KAGI.COM./settings">internal canonical</a>
+      <a href="https://help.kagi.com/settings">internal subdomain</a>
+      <a href="https://kagi.com.evil.example/x">lookalike</a>
+      <a href="https://kagi.com@evil.example/x">userinfo</a>
+      <a href="https://[invalid">invalid</a>`;
+    expect(extractAnswerAndReferences(html, "").references.map((r) => r.url)).toEqual([
+      "https://kagi.com.evil.example/x",
+      "https://kagi.com@evil.example/x",
+    ]);
+  });
+
+  it("rejects a parseable non-web scheme in fallback anchors while keeping HTTP(S) sources", () => {
+    // httpx: passes the href^=http selector and URL parsing. Only the protocol
+    // guard excludes it; a malformed URL would exercise a different branch.
+    const html = `
+      <p>Sources:
+        <a href="httpx://nonweb.example/source">Not a web source</a>
+        <a href="https://source.example/secure">HTTPS source</a>
+        <a href="http://source.example/plain">HTTP source</a>
+      </p>`;
+
+    expect(extractAnswerAndReferences(html, "").references.map((r) => r.url)).toEqual([
+      "https://source.example/secure",
+      "http://source.example/plain",
+    ]);
+  });
+
   it("de-duplicates repeated citation URLs", () => {
     const html = `
       <p>Fact one<sup><a href="https://src.example/a">1</a></sup>.</p>
