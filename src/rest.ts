@@ -11,7 +11,7 @@ import { KagiError, KagiTimeoutError, type KagiErrorDetail, type KagiErrorKind }
 import { KAGI_ERROR_STATUS, restErrorCode } from "./kagi/http.js";
 import { isSupportedLanguage } from "./kagi/languages.js";
 import { logWarn } from "./util/log.js";
-import type { SearchEngine, SearchResponse } from "./kagi/types.js";
+import type { MetaBlock, SearchEngine, SearchResponse } from "./kagi/types.js";
 
 /**
  * Ceiling on queries per request, because /search fans out to one upstream
@@ -128,7 +128,7 @@ export async function handleSearch(
   for (let i = 0; i < normQueries.length; i++) {
     const s = settled[i];
     if (s.status === "fulfilled") {
-      results.push({ query: normQueries[i], ok: true, data: s.value });
+      results.push({ query: normQueries[i], ok: true, data: publicResponseData(s.value) });
     } else {
       results.push({
         query: normQueries[i],
@@ -195,7 +195,7 @@ export async function handleSummarize(
       impl: normImpl,
       max_age_s: maxAgeS,
     });
-    return jsonOk({ ok: true, mode: client.mode, data });
+    return jsonOk({ ok: true, mode: client.mode, data: publicResponseData(data) });
   } catch (err) {
     return kagiErrorResponse(err);
   }
@@ -238,6 +238,19 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
       },
     );
   });
+}
+
+// Successful fallback metadata can carry the original exception too. Replace
+// diagnostics at serialization, without mutating shared/cache data or MCP output.
+function publicResponseData<T extends { meta: MetaBlock }>(data: T): T {
+  if (!data.meta) return data;
+  return {
+    ...data,
+    meta: {
+      ...data.meta,
+      warnings: data.meta.impl === "searxng" ? ["Served by the SearXNG fallback."] : undefined,
+    },
+  };
 }
 
 // Exception messages and detail may contain upstream bodies or stack traces.

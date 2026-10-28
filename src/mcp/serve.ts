@@ -17,6 +17,11 @@
 //     (kagi_research_wait_for_run, up to 300 s) open.
 
 import { createLegacyMcpHandler } from "agents/mcp";
+import {
+  DEFAULT_MAX_REQUEST_BODY_SIZE,
+  readRequestBody,
+  requestBodyTooLargeMessage,
+} from "@modelcontextprotocol/sdk/server/requestBody.js";
 import type { Env } from "../env.js";
 import { createKagiMcpServer } from "../mcp.js";
 
@@ -37,6 +42,32 @@ export async function serveMcp(request: Request, env: Env, ctx: ExecutionContext
       },
     });
   }
+  if (request.method === "POST") {
+    // Agents parses a clone before invoking the SDK transport. Apply the SDK's
+    // bounded reader first, including when Content-Length is absent or false.
+    let body;
+    try {
+      body = await readRequestBody(request);
+    } catch {
+      await request.body?.cancel().catch(() => undefined);
+      return requestError(400, -32700, "Parse error: Invalid JSON");
+    }
+    if (body.tooLarge) {
+      await request.body?.cancel().catch(() => undefined);
+      return requestError(413, -32000, requestBodyTooLargeMessage(DEFAULT_MAX_REQUEST_BODY_SIZE));
+    }
+    request = new Request(request, { body: body.text });
+  }
   const server = createKagiMcpServer(env, (p) => ctx.waitUntil(p));
   return createLegacyMcpHandler(server, { route: MCP_ROUTE })(request, env, ctx);
+}
+
+function requestError(status: number, code: number, message: string): Response {
+  return Response.json({ jsonrpc: "2.0", error: { code, message }, id: null }, {
+    status,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Expose-Headers": "mcp-session-id",
+    },
+  });
 }
