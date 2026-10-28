@@ -720,3 +720,237 @@ describe("kagiErrorResponse", () => {
     expect((await json(res)).error).toMatchObject({ code: "internal", message: "Internal server error" });
   });
 });
+
+// Successful REST payloads must not leak a primary's private diagnostics via
+// meta.warnings. The SearXNG fallback notice is the only warning prose a REST
+// caller may see; api/scrape warnings are internal diagnostics and are
+// stripped, while every other payload/cache field is retained verbatim.
+describe("REST successful payload warning guard", () => {
+  it("strips a private diagnostic warning from an api summary while retaining every other field", async () => {
+    const diagnostic = "private summary diagnostic: fixture-session-only";
+    const summarize = vi.fn().mockResolvedValue({
+      source: { kind: "url", ref: "https://example.test/article" },
+      summary: "canonical api summary",
+      engine_used: "cecil",
+      target_language: "EN",
+      tokens: 123,
+      meta: {
+        impl: "api",
+        cache_hit: true,
+        cache_age_s: 60,
+        elapsed_ms: 42,
+        cost_cents: 1.5,
+        trace_id: "trace-api-123",
+        warnings: [diagnostic],
+      },
+    });
+    createKagiClient.mockReturnValue(fakeClient({ mode: "api", summarize }));
+
+    const res = await handleSummarize(post({ url: "https://example.test/article" }), makeEnv());
+    const body = await json(res);
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ ok: true, mode: "api" });
+    expect(body.data).toEqual({
+      source: { kind: "url", ref: "https://example.test/article" },
+      summary: "canonical api summary",
+      engine_used: "cecil",
+      target_language: "EN",
+      tokens: 123,
+      meta: {
+        impl: "api",
+        cache_hit: true,
+        cache_age_s: 60,
+        elapsed_ms: 42,
+        cost_cents: 1.5,
+        trace_id: "trace-api-123",
+      },
+    });
+    expect((body.data as { meta: unknown }).meta).not.toHaveProperty("warnings");
+    expect(JSON.stringify(body)).not.toContain(diagnostic);
+  });
+
+  it("strips a private diagnostic warning from a scrape summary while retaining every other field", async () => {
+    const diagnostic = "private summary diagnostic: fixture-session-only";
+    const summarize = vi.fn().mockResolvedValue({
+      source: { kind: "url", ref: "https://example.test/article" },
+      summary: "canonical scrape summary",
+      engine_used: "scrape-default",
+      target_language: "EN",
+      meta: {
+        impl: "scrape",
+        cache_hit: false,
+        elapsed_ms: 7,
+        session_stale: false,
+        refresh_triggered: true,
+        warnings: [diagnostic],
+      },
+    });
+    createKagiClient.mockReturnValue(fakeClient({ mode: "scrape", summarize }));
+
+    const res = await handleSummarize(post({ url: "https://example.test/article" }), makeEnv());
+    const body = await json(res);
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ ok: true, mode: "scrape" });
+    expect(body.data).toEqual({
+      source: { kind: "url", ref: "https://example.test/article" },
+      summary: "canonical scrape summary",
+      engine_used: "scrape-default",
+      target_language: "EN",
+      meta: {
+        impl: "scrape",
+        cache_hit: false,
+        elapsed_ms: 7,
+        session_stale: false,
+        refresh_triggered: true,
+      },
+    });
+    expect((body.data as { meta: unknown }).meta).not.toHaveProperty("warnings");
+    expect(JSON.stringify(body)).not.toContain(diagnostic);
+  });
+
+  it("strips a private diagnostic warning from an api search while retaining payload and cache fields", async () => {
+    const diagnostic = "private search diagnostic: fixture-session-only";
+    const search = vi.fn().mockResolvedValue({
+      query: "q",
+      results: [
+        {
+          rank: 1,
+          url: "https://source.example/result",
+          title: "Result title",
+          snippet: "Result snippet",
+          published_at: "2026-01-01T00:00:00Z",
+          source_domain: "source.example",
+          thumbnail_url: "https://img.example/t.png",
+          source_impl: "api",
+          props: { kagi_relevance: 0.9 },
+        },
+      ],
+      buckets: {
+        direct_answer: "A direct answer",
+        related_search: ["related one"],
+      },
+      meta: {
+        impl: "api",
+        cache_hit: true,
+        cache_age_s: 120,
+        elapsed_ms: 11,
+        cost_cents: 2.5,
+        trace_id: "trace-search-api-456",
+        warnings: [diagnostic],
+      },
+    });
+    createKagiClient.mockReturnValue(fakeClient({ mode: "api", search }));
+
+    const res = await handleSearch(post({ queries: ["q"] }), makeEnv());
+    const body = await json(res);
+
+    expect(res.status).toBe(200);
+    expect(body.mode).toBe("api");
+    expect(body.results).toHaveLength(1);
+    const first = (body.results as Array<{ query: string; ok: boolean; data: unknown }>)[0];
+    expect(first.query).toBe("q");
+    expect(first.ok).toBe(true);
+    expect(first.data).toEqual({
+      query: "q",
+      results: [
+        {
+          rank: 1,
+          url: "https://source.example/result",
+          title: "Result title",
+          snippet: "Result snippet",
+          published_at: "2026-01-01T00:00:00Z",
+          source_domain: "source.example",
+          thumbnail_url: "https://img.example/t.png",
+          source_impl: "api",
+          props: { kagi_relevance: 0.9 },
+        },
+      ],
+      buckets: {
+        direct_answer: "A direct answer",
+        related_search: ["related one"],
+      },
+      meta: {
+        impl: "api",
+        cache_hit: true,
+        cache_age_s: 120,
+        elapsed_ms: 11,
+        cost_cents: 2.5,
+        trace_id: "trace-search-api-456",
+      },
+    });
+    expect((first.data as { meta: unknown }).meta).not.toHaveProperty("warnings");
+    expect(JSON.stringify(body)).not.toContain(diagnostic);
+  });
+
+  it("strips a private diagnostic warning from a scrape search while retaining payload and cache fields", async () => {
+    const diagnostic = "private search diagnostic: fixture-session-only";
+    const search = vi.fn().mockResolvedValue({
+      query: "q",
+      results: [
+        {
+          rank: 1,
+          url: "https://source.example/result",
+          title: "Result title",
+          snippet: "Result snippet",
+          source_domain: "source.example",
+          source_impl: "scrape",
+        },
+      ],
+      meta: {
+        impl: "scrape",
+        cache_hit: false,
+        elapsed_ms: 9,
+        session_stale: true,
+        refresh_triggered: false,
+        warnings: [diagnostic],
+      },
+    });
+    createKagiClient.mockReturnValue(fakeClient({ mode: "scrape", search }));
+
+    const res = await handleSearch(post({ queries: ["q"] }), makeEnv());
+    const body = await json(res);
+
+    expect(res.status).toBe(200);
+    expect(body.mode).toBe("scrape");
+    expect(body.results).toHaveLength(1);
+    const first = (body.results as Array<{ query: string; ok: boolean; data: unknown }>)[0];
+    expect(first.query).toBe("q");
+    expect(first.ok).toBe(true);
+    expect(first.data).toEqual({
+      query: "q",
+      results: [
+        {
+          rank: 1,
+          url: "https://source.example/result",
+          title: "Result title",
+          snippet: "Result snippet",
+          source_domain: "source.example",
+          source_impl: "scrape",
+        },
+      ],
+      meta: {
+        impl: "scrape",
+        cache_hit: false,
+        elapsed_ms: 9,
+        session_stale: true,
+        refresh_triggered: false,
+      },
+    });
+    expect((first.data as { meta: unknown }).meta).not.toHaveProperty("warnings");
+    expect(JSON.stringify(body)).not.toContain(diagnostic);
+  });
+});
+
+describe("REST numeric detail allowlist", () => {
+  it("drops an unlisted finite numeric detail field while retaining an allowed one", async () => {
+    const res = kagiErrorResponse(
+      new KagiError("upstream", "private message", { status: 503, unlisted: 42 }),
+    );
+    const body = await errorBody(res);
+
+    expect(body.error.detail).toEqual({ status: 503 });
+    expect(JSON.stringify(body)).not.toContain("unlisted");
+  });
+});
