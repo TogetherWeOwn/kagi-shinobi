@@ -14,7 +14,7 @@ from stdio to Streamable HTTP).
 
 | Path | Method | Auth | Purpose |
 |---|---|---|---|
-| `/mcp` | POST/GET | Admin or client key | MCP Streamable HTTP transport (McpAgent) |
+| `/mcp` | POST | Admin or client key | MCP Streamable HTTP transport, stateless (ADR 0020); GET answers 405 |
 | `/search` | POST `{queries, limit?, engine?}` | Admin or client key | Direct search — max 20 queries per request; `engine` is `kagi` (default), `searxng`, or `auto` |
 | `/search` | GET `?q=&format=json&limit=` | Admin or client key | One query, SearXNG-shaped `{results:[{url,title,content}]}` for `json_engine` |
 | `/summarize` | POST `{url, summary_type?, target_language?}` | Admin | Direct summarize |

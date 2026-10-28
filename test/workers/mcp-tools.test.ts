@@ -1,8 +1,8 @@
 // MCP tool surface — registration matrix and handler behavior.
 //
-// KagiMcpAgent is a Durable Object, and its tool handlers are closures handed
-// to an McpServer inside init(). Rather than stand up the DO, the prototype is
-// instantiated directly and given a fake server that captures those closures,
+// The tool handlers are closures handed to an McpServer by registerKagiMcp()
+// (the same function the stateless /mcp route builds its per-request server
+// with, ADR 0020). Here it is given a fake server that captures those closures,
 // which the tests then call. That keeps the assertions on what the handlers do
 // — formatting, error mapping, mode gating — instead of on the SDK's plumbing.
 //
@@ -26,7 +26,8 @@ const { createKagiClient, getResearchStub } = vi.hoisted(() => ({
 vi.mock("../../src/kagi/client.js", () => ({ createKagiClient }));
 vi.mock("../../src/research/run.js", () => ({ getResearchStub }));
 
-const { KagiMcpAgent } = await import("../../src/mcp");
+const mcp = await import("../../src/mcp");
+const { registerKagiMcp } = mcp;
 
 interface McpToolResult {
   content: Array<{ type: "text"; text: string }>;
@@ -78,11 +79,7 @@ function researchStub(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/**
- * Build an agent whose init() has run, and hand back the captured handlers.
- * Object.create skips the DO constructor; `env` is defined on the instance so
- * it shadows whatever McpAgent exposes on the prototype.
- */
+/** Register everything into a capturing fake server and hand back the handlers. */
 async function buildAgent(mode = "scrape", clientOverrides: Record<string, unknown> = {}) {
   const client = fakeClient(mode, clientOverrides);
   createKagiClient.mockReturnValue(client);
@@ -114,15 +111,8 @@ async function buildAgent(mode = "scrape", clientOverrides: Record<string, unkno
     prompt: () => {},
   };
 
-  const agent = Object.create(KagiMcpAgent.prototype) as {
-    server: unknown;
-    init: () => Promise<void>;
-  };
-  agent.server = server;
-  Object.defineProperty(agent, "env", { value: env, configurable: true });
   const waitUntil = vi.fn();
-  Object.defineProperty(agent, "ctx", { value: { waitUntil }, configurable: true });
-  await agent.init();
+  registerKagiMcp(server as unknown as Parameters<typeof registerKagiMcp>[0], env, waitUntil);
 
   return { tools, schemas, client, waitUntil };
 }
@@ -928,7 +918,7 @@ describe("kagiErrorMcp", () => {
 });
 
 // ADR 0017: the five cached tools accept max_age_s and forward it, and the
-// cache's background work rides the Durable Object's waitUntil.
+// cache's background work rides the request's waitUntil.
 describe("result cache wiring", () => {
   it.each([
     ["kagi_search_fetch", { queries: ["q"] }, "search"],
@@ -946,7 +936,7 @@ describe("result cache wiring", () => {
     );
   });
 
-  it("builds the client with the agent's waitUntil", async () => {
+  it("builds the client with the request's waitUntil", async () => {
     const { waitUntil } = await buildAgent();
     const opts = createKagiClient.mock.calls.at(-1)![1] as {
       waitUntil: (p: Promise<unknown>) => void;
@@ -956,5 +946,13 @@ describe("result cache wiring", () => {
     opts.waitUntil(work);
 
     expect(waitUntil).toHaveBeenCalledWith(work);
+  });
+});
+
+// ADR 0020: migration v5 deletes KagiMcpAgent. The stateless registration
+// matrix and request waitUntil wiring remain covered above.
+describe("the retired KagiMcpAgent class", () => {
+  it("is no longer exported by the MCP module", () => {
+    expect(mcp).not.toHaveProperty("KagiMcpAgent");
   });
 });

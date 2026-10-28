@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.1](https://github.com/TogetherWeOwn/kagi-shinobi/compare/v1.0.0...v1.0.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **mcp:** delete orphaned session namespace ([#77](https://github.com/TogetherWeOwn/kagi-shinobi/issues/77)) ([80b80e8](https://github.com/TogetherWeOwn/kagi-shinobi/commit/80b80e8deb791a7d3e4b45d553702addece3596a))
+
+
+### Performance Improvements
+
+* **mcp:** serve /mcp statelessly without a per-session Durable Object ([#75](https://github.com/TogetherWeOwn/kagi-shinobi/issues/75)) ([3f624c7](https://github.com/TogetherWeOwn/kagi-shinobi/commit/3f624c7fd08be1790ae67fe0ef83af704b4e82a8))
+
 ## 1.0.0 (2026-10-05)
 
 

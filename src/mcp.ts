@@ -1,12 +1,16 @@
 // Remote MCP server: exposes tools over Streamable HTTP.
 //
+// ADR 0020: /mcp is served statelessly — src/mcp/serve.ts builds one McpServer
+// per request with createKagiMcpServer() and hands it to a sessionless
+// transport. No Durable Object is involved; migration v5 deletes the orphaned
+// KagiMcpAgent namespace together with its stored sessions.
+//
 // S2 wired the KagiClient facade so the mode dispatcher runs on every call.
 // S3 added the official API endpoint impls. S4 registers the differentiated
 // tools (small_web, fastgpt, extract, enrich_{web,news}) with mode-gated
 // availability — tools whose active-mode support says "unavailable" never
 // appear in tools/list.
 
-import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Env } from "./env.js";
@@ -104,14 +108,33 @@ const RESEARCH_CANCEL_DESCRIPTION =
   "Cancel a running research job. Idempotent. Any partial output collected " +
   "so far remains available via kagi_research_get_output.";
 
-export class KagiMcpAgent extends McpAgent<Env> {
-  server = new McpServer({
-    name: "kagi-shinobi",
-    version: "0.2.0-dev",
-  });
+type WaitUntil = (promise: Promise<unknown>) => void;
 
-  async init(): Promise<void> {
-    const client = createKagiClient(this.env, { waitUntil: (p) => this.ctx.waitUntil(p) });
+const SERVER_INFO = { name: "kagi-shinobi", version: "0.2.0-dev" } as const;
+
+/** A fresh, fully registered server. One per request: ADR 0020. */
+export function createKagiMcpServer(env: Env, waitUntil: WaitUntil): McpServer {
+  const server = new McpServer(SERVER_INFO);
+  registerKagiMcp(server, env, waitUntil);
+  return server;
+}
+
+/**
+ * Register every tool, resource and prompt on `server`. Mode gating happens
+ * here, per call, from `env` — nothing is read from or kept in a session.
+ */
+export function registerKagiMcp(server: McpServer, env: Env, waitUntil: WaitUntil): void {
+  new KagiMcpRegistrar(server, env).register(waitUntil);
+}
+
+class KagiMcpRegistrar {
+  constructor(
+    private readonly server: McpServer,
+    private readonly env: Env,
+  ) {}
+
+  register(waitUntil: WaitUntil): void {
+    const client = createKagiClient(this.env, { waitUntil });
     const mode = client.mode;
 
     // Always registered — capability matrix marks these "both".
