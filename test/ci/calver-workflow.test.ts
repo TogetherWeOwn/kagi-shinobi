@@ -163,6 +163,30 @@ describe("CalVer workflow safety wiring", () => {
     expect(title).not.toMatch(/continue-on-error:\s*true|\|\|\s*true|gh\s+api[^\n]*(?:statuses|check-runs)/);
   });
 
+  it("selects a TypeScript-capable Node runtime on the dispatch path before any .ts invocation", () => {
+    const title = jobs(read("pr-lint.yml")).find((job) => /^ {2}title:/m.test(job))!;
+    const steps = title.split(/\n {6}- /).slice(1).map((step) => `        ${step}`);
+    const onDispatch = (step: string) => {
+      const raw = `${step}\n        __end__:`.match(/^ {8}if:([\s\S]*?)(?=^ {8}[a-z_-]+:)/m)?.[1];
+      if (raw === undefined) return true;
+      const expression = raw.trim().replace(/^[>|][-+]?\s*\n/, "").trim()
+        .replace(/^\$\{\{\s*/, "").replace(/\s*\}\}$/, "");
+      return runInNewContext(`
+        const github = { event_name: "workflow_dispatch" };
+        const success = () => true;
+        const always = () => true;
+        Boolean(${expression});
+      `, Object.create(null), { timeout: 100, contextCodeGeneration: { strings: false, wasm: false } }) as boolean;
+    };
+    const invocations = steps.flatMap((step, index) => /\bnode\s+(?:--[^\s]+\s+)*[^\s"']+\.ts\b/.test(step) && onDispatch(step) ? [index] : []);
+    expect(invocations.length, "the dispatched lint helper must actually execute").toBeGreaterThan(0);
+    const setupIndex = steps.findIndex((step) => /^ {8}uses:\s*actions\/setup-node@/m.test(step) && onDispatch(step));
+    expect(setupIndex, "dispatch must explicitly set up Node, not inherit an unknown runner default").toBeGreaterThanOrEqual(0);
+    const major = Number(steps[setupIndex].match(/node-version:\s*["']?(\d+)/)?.[1]);
+    expect(major, "the selected Node must support direct TypeScript execution").toBeGreaterThanOrEqual(22);
+    for (const index of invocations) expect(index, "Node setup must precede every executed .ts step").toBeGreaterThan(setupIndex);
+  });
+
   it("keeps the real required lint and pinned full-history secret scan instead of a success shortcut", () => {
     const lint = read("pr-lint.yml");
     const title = jobs(lint).find((job) => /^ {2}title:/m.test(job))!;

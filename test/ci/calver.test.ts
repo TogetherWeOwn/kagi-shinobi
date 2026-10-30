@@ -235,7 +235,7 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
   let candidate: Record<string, string> = { ...state?.files };
   const blobs = new Map<string, string>();
   const updatedTree = "8".repeat(40);
-  let publicationFinished = false;
+  const publishedTags = new Set<string>();
   const persist = () => {
     if (!state) return;
     state.branchSha = branchSha;
@@ -311,16 +311,19 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
       if (w.compareStatuses?.[path]) return json({ status: w.compareStatuses[path] });
       if (path === `/compare/${SHA}...main`) return json({ status: "ahead" });
       if (path === `/compare/main...${SHA}`) return json({ status: "behind" });
-      if (path === `/releases/tags/${TAG}`) return w.existingPlan ? json({
-        id: 17, tag_name: TAG, draft: false, prerelease: false, html_url: RELEASE_URL,
+      const releaseRoute = path.match(/^\/releases\/tags\/(.+)$/);
+      if (releaseRoute) return w.existingPlan?.tag === releaseRoute[1] ? json({
+        id: 17, tag_name: w.existingPlan.tag, draft: false, prerelease: false,
+        html_url: `https://github.com/${REPO}/releases/tag/${w.existingPlan.tag}`,
         body: `<!-- calver-plan:${w.existingPlan.id} -->`,
       }) : json({}, 404);
-      if (path === `/git/ref/tags/${TAG}`) return w.existingPlan
-        ? json({ ref: `refs/tags/${TAG}`, object: { type: "tag", sha: TAG_OBJECT_SHA } }) : json({}, 404);
+      const tagRoute = path.match(/^\/git\/ref\/tags\/(.+)$/);
+      if (tagRoute) return w.existingPlan?.tag === tagRoute[1]
+        ? json({ ref: `refs/tags/${w.existingPlan.tag}`, object: { type: "tag", sha: TAG_OBJECT_SHA } }) : json({}, 404);
       if (path === `/git/tags/${TAG_OBJECT_SHA}` && w.existingPlan) return json({
-        sha: TAG_OBJECT_SHA, tag: TAG,
+        sha: TAG_OBJECT_SHA, tag: w.existingPlan.tag,
         message: `calver-plan-v1\n${JSON.stringify({ ...w.existingPlan, publicationEvidence: null })}`,
-        object: { type: "commit", sha: w.existingTagSha ?? SHA },
+        object: { type: "commit", sha: w.existingTagSha ?? w.existingPlan.sha },
       });
       const runs = w.ciRuns ?? [ciRun(SHA, w.ciEvent ?? "push")];
       if (path === "/actions/workflows/ci.yml/runs") {
@@ -400,7 +403,8 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
       return noContent();
     }
     if (method === "POST" && path === "/actions/workflows/deploy.yml/dispatches") {
-      if (!publicationFinished) throw new Error("deployment invoked before publication completed");
+      const tag = (body.inputs as Json | undefined)?.tag;
+      if (typeof tag !== "string" || !publishedTags.has(tag)) throw new Error("deployment invoked before publication completed for that tag");
       effects.push("dispatch-deploy");
       return noContent();
     }
@@ -429,9 +433,9 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
         if (w.publishError) throw w.publishError;
         // A caller that fires and forgets publication must not dispatch deploy.
         await Promise.resolve();
-        publicationFinished = true;
+        publishedTags.add(plan.tag);
         effects.push("publish");
-        return { ...plan, created: true, releaseUrl: RELEASE_URL, dryRun: false, ...w.publication };
+        return { ...plan, created: true, releaseUrl: `https://github.com/${REPO}/releases/tag/${plan.tag}`, dryRun: false, ...w.publication };
       },
     },
   };
@@ -586,6 +590,58 @@ describe("coalesced callbacks reconcile the unpublished selected-release backlog
   const callbackForLaterMerge = (w: World) => harness(w, {
     GITHUB_EVENT_NAME: "workflow_run", GITHUB_SHA: laterSha,
   }, completion("push", { id: 9, head_sha: laterSha }));
+
+  const selectedCurrentWorld = (version: string, tag: string) => {
+    const current = {
+      ...selectedPull(), number: 43, merge_commit_sha: laterSha, merged_at: "2026-10-30T06:02:00Z",
+      head: { ...selectedPull().head, sha: "6".repeat(40) },
+      base: { ...selectedPull().base, sha: SHA },
+      title: `chore: release ${version}`, body: `Release ${version}`,
+    };
+    const w = backlogWorld([selectedPull()]);
+    w.time = "2026-10-30T06:03:00Z";
+    w.files = manifests(version);
+    w.filesBySha = { [SHA]: manifests(), [laterSha]: manifests(version) };
+    w.associatedBySha = { [SHA]: [selectedPull()], [laterSha]: [current] };
+    w.planBySha = {
+      [SHA]: { version: VERSION, tag: TAG, id: "1".repeat(64) },
+      [laterSha]: { version, tag, id: "2".repeat(64), previousStableTag: tag === TAG ? "v1.0.1" : TAG },
+    };
+    w.compareStatuses = {
+      [`/compare/${laterSha}...main`]: "identical",
+      [`/compare/main...${laterSha}`]: "identical",
+    };
+    return w;
+  };
+
+  it("publishes recovered A and the selected triggering B in merge order during one invocation", async () => {
+    const h = callbackForLaterMerge(selectedCurrentWorld("2026.1030.1", "v2026.1030.1"));
+    await h.run();
+    expect(h.published.map(({ plan }) => plan.sha)).toEqual([SHA, laterSha]);
+    expect(h.published.map(({ plan }) => plan.tag)).toEqual([TAG, "v2026.1030.1"]);
+    expect(h.dispatches("deploy.yml").map((call) => call.body)).toEqual([
+      { ref: "main", inputs: { tag: TAG } },
+      { ref: "main", inputs: { tag: "v2026.1030.1" } },
+    ]);
+    for (const sha of [SHA, laterSha]) {
+      expect(h.calls.some((call) => call.path === `/commits/${sha}/pulls`), sha).toBe(true);
+      expect(h.calls.some((call) => call.path === "/actions/workflows/ci.yml/runs" && call.query.get("head_sha") === sha), sha).toBe(true);
+    }
+  });
+
+  it("skips a permanently failed-CI backlog A without preventing selected green B publication", async () => {
+    // A never occupies its planned slot, so B's committed/shared-planned .0 is
+    // still available. The test is about progress and CI isolation, not allocation.
+    const w = selectedCurrentWorld(VERSION, TAG);
+    w.ciRuns = [{ ...ciRun(SHA, "push", 8), conclusion: "failure" }, ciRun(laterSha, "push", 9)];
+    const h = callbackForLaterMerge(w);
+    await h.run();
+    expect(h.published.map(({ plan }) => plan.sha)).toEqual([laterSha]);
+    expect(h.published[0].plan.tag).toBe(TAG);
+    expect(h.dispatches("deploy.yml").map((call) => call.body)).toEqual([{ ref: "main", inputs: { tag: TAG } }]);
+    expect(h.calls.some((call) => call.path === "/actions/workflows/ci.yml/runs" && call.query.get("head_sha") === SHA)).toBe(true);
+    expect(h.calls.some((call) => call.path === "/actions/workflows/ci.yml/runs" && call.query.get("head_sha") === laterSha)).toBe(true);
+  });
 
   it("reconciles selected merge A after its pending callback was replaced by ordinary merge B", async () => {
     const h = callbackForLaterMerge(backlogWorld([selectedPull()]));
