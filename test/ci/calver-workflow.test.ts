@@ -97,6 +97,66 @@ describe("CalVer workflow safety wiring", () => {
     }
   });
 
+  it("makes the existing required title job dispatchable with explicit PR and head inputs", () => {
+    const lint = read("pr-lint.yml");
+    expect(lint).toMatch(/^ {2}workflow_dispatch:/m);
+    const dispatch = lint.slice(lint.indexOf("\n  workflow_dispatch:"), lint.indexOf("\njobs:\n"));
+    for (const input of ["pr_number", "head_sha"]) {
+      expect(dispatch).toMatch(new RegExp(`^ {6}${input}:`, "m"));
+    }
+    const title = jobs(lint).find((job) => /^ {2}title:/m.test(job));
+    expect(title, "preserve the required title context, not a parallel optional job").toBeDefined();
+    const checkName = title?.match(/^ {4}name:\s*["']?([^"'\n]+)["']?\s*$/m)?.[1]?.trim();
+    expect(checkName === undefined || checkName === "title", "required check remains named title").toBe(true);
+    expect(title).toMatch(/\bnode\s+ci\/pr-lint\.ts\b/);
+    expect(title).toMatch(/PR_NUMBER:\s*\$\{\{\s*inputs\.pr_number\s*\}\}/);
+    expect(title).toMatch(/EXPECTED_HEAD_SHA:\s*\$\{\{\s*inputs\.head_sha\s*\}\}/);
+    expect(title).toMatch(/GITHUB_TOKEN:\s*\$\{\{\s*github\.token\s*\}\}/);
+    const checkout = title!.split(/\n {6}- /).find((step) => /uses:\s*actions\/checkout@/.test(step))!;
+    const sparse = checkout.match(/sparse-checkout:\s*([^\n]+)/)?.[1]?.trim();
+    // The dispatch helper is in ci/, unlike the old .github-only sparse tree.
+    expect(sparse === undefined || sparse === "|" || sparse.includes("ci"), "checkout must include the executable lint helper").toBe(true);
+    if (sparse === "|") expect(checkout).toMatch(/^\s+ci\s*$/m);
+    expect(title).not.toMatch(/continue-on-error:\s*true|\|\|\s*true|gh\s+api[^\n]*(?:statuses|check-runs)/);
+  });
+
+  it("keeps the real required lint and pinned full-history secret scan instead of a success shortcut", () => {
+    const lint = read("pr-lint.yml");
+    const title = jobs(lint).find((job) => /^ {2}title:/m.test(job))!;
+    expect(title).toContain("python3 -m unittest discover -s .github/scripts");
+    expect(title).toContain("python3 .github/scripts/pr_standards.py");
+    expect(lint).toMatch(/^ {2}pull_request:/m);
+    const scan = read("secret-scan.yml");
+    const gitleaks = jobs(scan).find((job) => /^ {2}gitleaks:/m.test(job))!;
+    expect(gitleaks, "preserve the required gitleaks job identity").toBeDefined();
+    const checkName = gitleaks.match(/^ {4}name:\s*["']?([^"'\n]+)["']?\s*$/m)?.[1]?.trim();
+    expect(checkName === undefined || checkName === "gitleaks", "required check remains named gitleaks").toBe(true);
+    expect(gitleaks).toMatch(/fetch-depth:\s*0/);
+    expect(gitleaks).toMatch(/GITLEAKS_VERSION:\s*["']?\d+\.\d+\.\d+["']?/);
+    expect(gitleaks).toContain("set -euo pipefail");
+    expect(gitleaks).toMatch(/gitleaks["']?\s+detect\s+--source\s+\.\s+--config\s+\.gitleaks\.toml/);
+    expect(gitleaks).not.toMatch(/continue-on-error:\s*true|\|\|\s*true|--exit-code(?:[= ]+)0|gh\s+api[^\n]*(?:statuses|check-runs)/);
+    expect(gitleaks).not.toMatch(/ref:\s*(?:["']?main["']?|refs\/heads\/main)\s*$/m);
+    expect(scan).toMatch(/^ {2}pull_request:/m);
+  });
+
+  it("routes the new required-check dispatch event without self-hosted overflow defaults", () => {
+    for (const filename of ["ci.yml", "pr-lint.yml", "secret-scan.yml"]) {
+      const text = read(filename);
+      expect(text, filename).toMatch(/^ {2}workflow_dispatch:/m);
+      for (const job of jobs(text)) {
+        const runner = job.match(/^ {4}runs-on:\s*(.+)$/m)?.[1];
+        if (/^(?:ubuntu-latest|"ubuntu-latest"|'ubuntu-latest')\s*$/.test(runner ?? "")) continue;
+        // Existing PR/push/schedule routing need not migrate in this slice.
+        // This explicit first branch proves dispatch uses ubuntu-latest even
+        // with every overflow variable absent; a truthy runner cannot fall back.
+        expect(runner, `${filename}: dispatch must select the free runner before legacy routing`).toMatch(
+          /^\$\{\{\s*github\.event_name\s*==\s*["']workflow_dispatch["']\s*&&\s*["']ubuntu-latest["']\s*\|\|/,
+        );
+      }
+    }
+  });
+
   it("keeps dispatch as full required CI with the existing coverage and artifact-boot checks", () => {
     const ci = read("ci.yml");
     expect(ci).toMatch(/^ {2}workflow_dispatch:/m);

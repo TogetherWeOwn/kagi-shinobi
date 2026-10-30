@@ -19,8 +19,10 @@
 //
 // Version PRs atomically commit package.json, package-lock.json and CHANGELOG.md
 // with Git Data tree/commit/ref APIs, create/update a normal reviewed PR, then
-// explicitly dispatch ci.yml on its updated release/calver branch. Publication
-// explicitly dispatches deploy.yml on main with inputs.tag, only AFTER the shared
+// explicitly dispatch ci.yml, pr-lint.yml and secret-scan.yml on its updated
+// release/calver branch. PR lint receives string inputs pr_number and head_sha
+// to validate live PR metadata for that exact head, not a fabricated status.
+// Publication explicitly dispatches deploy.yml on main with inputs.tag, only AFTER the shared
 // publisher resolves. No tag/Release writes belong to the caller itself.
 //
 // All GitHub traffic below is an offline HTTP fake. Planner answers are literal
@@ -289,6 +291,14 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
       effects.push("dispatch-ci");
       return noContent();
     }
+    if (method === "POST" && path === "/actions/workflows/pr-lint.yml/dispatches") {
+      effects.push("dispatch-pr-lint");
+      return noContent();
+    }
+    if (method === "POST" && path === "/actions/workflows/secret-scan.yml/dispatches") {
+      effects.push("dispatch-secret-scan");
+      return noContent();
+    }
     if (method === "POST" && path === "/actions/workflows/deploy.yml/dispatches") {
       if (!publicationFinished) throw new Error("deployment invoked before publication completed");
       effects.push("dispatch-deploy");
@@ -366,7 +376,8 @@ describe("CalVer version PRs, not main-merge releases", () => {
     expect(create?.body).toMatchObject({ base: "main", head: BRANCH });
     expect(h.dispatches("ci.yml")).toHaveLength(1);
     expect(h.dispatches("ci.yml")[0]).toMatchObject({ body: { ref: BRANCH }, branchSha: UPDATED_SHA });
-    expect(h.effects).toEqual(["version-commit", "dispatch-ci"]);
+    expect(h.effects[0]).toBe("version-commit");
+    expect(h.effects.slice(1).sort()).toEqual(["dispatch-ci", "dispatch-pr-lint", "dispatch-secret-scan"]);
     expect(h.calls.some((c) => c.path.endsWith("/merge") || c.path.endsWith("/reviews") && c.method !== "GET")).toBe(false);
     expectNoPublication(h);
   });
@@ -416,6 +427,47 @@ describe("CalVer version PRs, not main-merge releases", () => {
     const h = harness(world({ associated: [selectedPull(), { ...selectedPull(), number: 43 }] }));
     await expect(h.run()).rejects.toThrow(/ambiguous|multiple|selection/i);
     expectNoPublication(h);
+  });
+});
+
+describe("generated version PR required checks", () => {
+  it.each([false, true])("dispatches every real required workflow on the new branch head, existing PR=%j", async (existing) => {
+    const openPull = existing ? { ...selectedPull(), state: "open", merged: false, merged_at: "" } : null;
+    const h = harness(world({ pull: null, openPull, files: manifests("1.0.1") }));
+    expect(await h.run()).toMatchObject({ status: "version-pr", number: 42, headSha: UPDATED_SHA });
+    for (const workflow of ["ci.yml", "pr-lint.yml", "secret-scan.yml"]) {
+      expect(h.dispatches(workflow), workflow).toHaveLength(1);
+      expect(h.dispatches(workflow)[0], workflow).toMatchObject({ body: { ref: BRANCH }, branchSha: UPDATED_SHA });
+    }
+    expect(h.dispatches("pr-lint.yml")[0].body).toEqual({
+      ref: BRANCH, inputs: { pr_number: "42", head_sha: UPDATED_SHA },
+    });
+    // A POST /statuses or /check-runs SUCCESS is not execution of these checks.
+    expect(h.calls.filter((call) => call.method !== "GET" && /\/statuses\/|\/check-runs/.test(call.path))).toEqual([]);
+    expectNoPublication(h);
+  });
+
+  it("selects the new proposal number after a stale merged PR, not the old release selection", async () => {
+    const h = harness(world({ plans: [{ version: "2026.1030.1", tag: "v2026.1030.1" }] }));
+    expect(await h.run()).toMatchObject({ status: "version-pr", number: 43, headSha: UPDATED_SHA });
+    expect(h.dispatches("pr-lint.yml")[0]?.body).toEqual({
+      ref: BRANCH, inputs: { pr_number: "43", head_sha: UPDATED_SHA },
+    });
+    for (const workflow of ["ci.yml", "pr-lint.yml", "secret-scan.yml"]) {
+      expect(h.dispatches(workflow), workflow).toHaveLength(1);
+      expect(h.dispatches(workflow)[0].branchSha).toBe(UPDATED_SHA);
+    }
+    expectNoPublication(h);
+  });
+
+  it.each(["ci.yml", "pr-lint.yml", "secret-scan.yml"])("fails closed if dispatching %s fails", async (workflow) => {
+    const h = harness(world({
+      pull: null, files: manifests("1.0.1"), status: { [`POST /actions/workflows/${workflow}/dispatches`]: 503 },
+    }));
+    await expect(h.run()).rejects.toThrow(/HTTP 503/);
+    expect(h.dispatches(workflow)).toHaveLength(1);
+    expectNoPublication(h);
+    expect(h.calls.some((call) => call.method !== "GET" && /\/statuses\/|\/check-runs/.test(call.path))).toBe(false);
   });
 });
 
