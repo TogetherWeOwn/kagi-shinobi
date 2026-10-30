@@ -38,9 +38,11 @@ back to a self-hosted runner.
    green checks, add an override, or use an admin merge.
 3. Publication independently fetches the selected PR from GitHub. It must be a
    merged, non-draft, same-repository bot-created `release/calver` → `main` PR
-   carrying the selection label, with the exact invocation SHA as its merge
-   commit and only the expected three changed files. Arbitrary manifest edits,
-   webhook fields, a branch name or a green main build alone are not selection.
+   carrying the selection label, with its exact associated merge SHA and only
+   the expected three changed files. Arbitrary manifest edits, webhook fields,
+   a branch name or a green main build alone are not selection. The serialized
+   writer reconciles closed selected PRs as well as the triggering SHA, so a
+   newer callback cannot erase an unpublished selection.
 4. The exact selected merge SHA needs successful full CI. The planner rechecks
    its UTC slot; the committed package/root-lock/root-package identity and notes
    must agree. Date/slot drift refreshes a version PR for another normal review,
@@ -62,16 +64,34 @@ itself does not bump package versions or edit the current CHANGELOG.
 
 The `calver-version-writer` concurrency group has `cancel-in-progress: false`.
 An active writer is never cancelled, but pending GitHub concurrency entries can
-coalesce: this is not a FIFO queue. Read-only CI completion callbacks may arrive
-out of order. A proposal must start from current main; publication keeps the
-selected exact SHA even if main advances. Manual recovery writers must respect
-the same serialization, preserve gates and never move/delete a published tag.
+coalesce: this is not a FIFO queue. Each surviving writer paginates the closed
+main-target PRs and revalidates selected merges oldest first through their live
+PR, commit association, allowed files, exact-SHA CI, manifests and shared plan.
+Already-published operations require matching Release/annotated-tag provenance
+and are skipped without another publication or deployment dispatch. Stale
+historical selections never seed a proposal from old main; the triggering main
+SHA must pass its own full CI before refreshing the proposal.
+
+CI completion callbacks may arrive out of order. Successful `push`,
+`workflow_dispatch` and `schedule` full-CI origins can resume the writer, but only
+for workflow `CI` at `.github/workflows/ci.yml`, the same repository, main branch,
+completed success and a complete exact SHA. A proposal must start from current
+main; publication keeps the selected exact SHA even if main advances. Manual
+recovery writers must respect the same serialization, preserve gates and never
+move/delete a published tag.
 
 ## Failures, retry and rollback
 
 - **No exact-SHA full CI yet:** publication is refused/deferred. A successful CI
   completion is the continuation; an old successful run on another SHA is not
   sufficient. Fix real CI failures instead of bypassing them.
+- **Ref created, but PR creation or labeling failed:** rerun the writer normally.
+  It rereads the live branch and PR; an incomplete proposal is recoverable only
+  with the generated commit marker bound to its repository, parent, tree and
+  manifest version plus bot author/committer identity. A changed or unknown head
+  is refused. The returned labels must contain `calver:release` before any
+  required-check dispatch. An unlabeled merged intermediate PR never selects a
+  release; recovery does not bypass normal review or full CI.
 - **Stale date/slot before publication:** refresh the version PR and rerun all
   required checks/review. Another writer winning a publication race is a hard
   failure; no retag or implicit reallocation follows.

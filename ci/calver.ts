@@ -96,11 +96,13 @@ function object(value: unknown): Record<string, unknown> {
   requireValue(value !== null && typeof value === "object" && !Array.isArray(value), "invalid object");
   return value as Record<string, unknown>;
 }
-function selected(pull: Pull, repository: string): boolean {
+function proposalPull(pull: Pull, repository: string): boolean {
   return Number.isSafeInteger(pull.number) && pull.user?.login === "github-actions[bot]" &&
-    pull.user.type === "Bot" && pull.labels?.some((l) => l.name === LABEL) &&
-    pull.head?.ref === BRANCH && pull.head.repo?.full_name === repository &&
+    pull.user.type === "Bot" && pull.head?.ref === BRANCH && pull.head.repo?.full_name === repository &&
     pull.base?.ref === "main" && pull.base.repo?.full_name === repository;
+}
+function selected(pull: Pull, repository: string): boolean {
+  return proposalPull(pull, repository) && pull.labels?.some((l) => l.name === LABEL);
 }
 
 // A single authenticated HTTP client, with bounded complete pagination. Never
@@ -177,17 +179,43 @@ async function exactPublishedReplay(api: Api, plan: Plan): Promise<boolean> {
   return true;
 }
 
+const PROPOSAL_MARKER = "\n\ncalver-proposal-v1\n";
+async function requireGeneratedProposal(api: Api, sha: string): Promise<void> {
+  const commit = await api.get<{ sha: string; message: string; tree: { sha: string }; parents: Array<{ sha: string }> }>(`/git/commits/${sha}`);
+  const marker = commit.message?.split(PROPOSAL_MARKER);
+  requireValue(marker?.length === 2, "version branch lacks generated proposal provenance");
+  const proof = object(JSON.parse(marker[1]));
+  requireValue(commit.sha === sha && proof.repository === REPOSITORY && typeof proof.baseSha === "string" && SHA.test(proof.baseSha) &&
+    commit.parents?.length === 1 && commit.parents[0].sha === proof.baseSha && proof.treeSha === commit.tree?.sha && SHA.test(commit.tree.sha) &&
+    typeof proof.version === "string" && marker[0] === `chore: release ${proof.version}`, "version branch generated provenance mismatch");
+  const identity = await api.get<{ author: { login: string; type: string } | null; committer: { login: string; type: string } | null }>(`/commits/${sha}`);
+  requireValue(identity.author?.login === "github-actions[bot]" && identity.author.type === "Bot" &&
+    identity.committer?.login === "github-actions[bot]" && identity.committer.type === "Bot", "version branch has an unknown generated owner");
+  const source = await filesAt(api, sha);
+  requireValue(source.pkg.version === proof.version && source.notes.includes(`## ${proof.version}\n`), "generated proposal contents mismatch");
+}
+
 async function versionPr(api: Api, deps: Deps, sha: string, plan: Plan, source: Files): Promise<Result> {
   const pulls = await api.list<Pull>("/pulls?state=open");
   requireValue(!pulls.some((p) => p.head?.ref.startsWith("release-please--")), "legacy release PR still owns manifests/CHANGELOG; resolve it before CalVer cutover");
-  const candidates = pulls.filter((p) => selected(p, REPOSITORY));
+  // A missing label can be the result of a failed prior POST. It is never release
+  // selection; only generated commit provenance permits repairing that proposal.
+  const candidates = pulls.filter((p) => proposalPull(p, REPOSITORY));
   requireValue(candidates.length <= 1, "multiple open version PRs");
-  const open = candidates[0];
+  let open = candidates[0];
+  if (open) {
+    open = await api.get<Pull>(`/pulls/${open.number}`);
+    requireValue(proposalPull(open, REPOSITORY) && open.state === "open", "version PR owner changed");
+  }
   const branch = await api.request<Ref>("GET", `/git/ref/heads/${BRANCH}`, undefined, true);
   if (branch) {
     // A closed, merged version PR may leave its disposable generated ref behind.
+    requireValue(branch.object?.type === "commit" && SHA.test(branch.object.sha), "invalid version branch");
     const owners = open ? [open] : await api.list<Pull>(`/pulls?state=closed&head=TogetherWeOwn:${BRANCH}`);
-    requireValue(branch.object?.type === "commit" && owners.some((p) => selected(p, REPOSITORY) && p.head.sha === branch.object.sha), "version branch has an unknown owner or changed head");
+    if (!owners.some((p) => selected(p, REPOSITORY) && p.head.sha === branch.object.sha)) {
+      if (open) requireValue(open.head.sha === branch.object.sha, "version branch changed head");
+      await requireGeneratedProposal(api, branch.object.sha);
+    }
   }
   const notes = await deps.releaser.notes(plan);
   const contents: Record<string, string> = {
@@ -199,7 +227,11 @@ async function versionPr(api: Api, deps: Deps, sha: string, plan: Plan, source: 
   requireValue(SHA.test(commit.tree?.sha), "invalid main commit tree");
   const tree = await api.request<{ sha: string }>("POST", "/git/trees", { base_tree: commit.tree.sha, tree: PATHS.map((path) => ({ path, mode: "100644", type: "blob", content: contents[path] })) });
   requireValue(tree && SHA.test(tree.sha), "invalid version tree");
-  const updated = await api.request<{ sha: string }>("POST", "/git/commits", { message: `chore: release ${plan.version}`, tree: tree.sha, parents: [sha] });
+  const provenance = { repository: REPOSITORY, baseSha: sha, treeSha: tree.sha, version: plan.version };
+  const updated = await api.request<{ sha: string }>("POST", "/git/commits", {
+    message: `chore: release ${plan.version}${PROPOSAL_MARKER}${JSON.stringify(provenance)}`,
+    tree: tree.sha, parents: [sha],
+  });
   requireValue(updated && SHA.test(updated.sha), "invalid version commit");
   // Only the generated branch is replaceable. Tags/default branch are never
   // moved. Old version commits remain reachable through their PR history.
@@ -218,7 +250,8 @@ async function versionPr(api: Api, deps: Deps, sha: string, plan: Plan, source: 
     ? await api.request<Pull>("PATCH", `/pulls/${open.number}`, body)
     : await api.request<Pull>("POST", "/pulls", { ...body, base: "main", head: BRANCH, draft: false });
   requireValue(pull && Number.isSafeInteger(pull.number), "version PR creation failed");
-  await api.request("POST", `/issues/${pull.number}/labels`, { labels: [LABEL] });
+  const labels = await api.request<Array<{ name: string }>>("POST", `/issues/${pull.number}/labels`, { labels: [LABEL] });
+  requireValue(Array.isArray(labels) && labels.some((label) => label.name === LABEL), "version PR label marker was not applied");
   const head = await api.get<Ref>(`/git/ref/heads/${BRANCH}`);
   requireValue(head.object.sha === updated.sha, "version branch changed before required-check dispatch");
   // GITHUB_TOKEN-created PRs start no workflows, so every required context has
@@ -242,7 +275,10 @@ export async function runCalver(env: Env, deps: Deps): Promise<Result> {
   let sha = env.GITHUB_SHA ?? "";
   if (env.GITHUB_EVENT_NAME === "workflow_run") {
     const run = object(event.workflow_run);
-    if (run.event !== "push" || run.head_branch !== "main" || run.status !== "completed" || run.conclusion !== "success" || run.path !== ".github/workflows/ci.yml" || object(run.head_repository).full_name !== REPOSITORY) return { status: "ignored" };
+    if (!["push", "workflow_dispatch", "schedule"].includes(String(run.event)) || run.name !== "CI" ||
+      run.head_branch !== "main" || run.status !== "completed" || run.conclusion !== "success" ||
+      run.path !== ".github/workflows/ci.yml" || object(run.head_repository).full_name !== REPOSITORY ||
+      !SHA.test(String(run.head_sha))) return { status: "ignored" };
     sha = String(run.head_sha);
   } else {
     requireValue(env.GITHUB_EVENT_NAME === "push" || env.GITHUB_EVENT_NAME === "workflow_dispatch", "unsupported release event");
@@ -250,6 +286,22 @@ export async function runCalver(env: Env, deps: Deps): Promise<Result> {
   }
   requireValue(SHA.test(sha), "invalid exact release SHA");
   const api = github(env.GITHUB_TOKEN, deps.fetch);
+  // GitHub concurrency replaces pending entries. The closed PRs, not callback
+  // delivery or process memory, are the durable release-selection backlog.
+  const closed = await api.list<Pull>("/pulls?state=closed&base=main");
+  const backlog = closed.filter((p) => selected(p, REPOSITORY) && p.merged === true && p.merged_at &&
+    !p.draft && p.merge_commit_sha !== sha && SHA.test(p.merge_commit_sha ?? ""));
+  backlog.sort((a, b) => a.merged_at!.localeCompare(b.merged_at!) || a.number - b.number);
+  let reconciled: Result | undefined;
+  for (const pull of backlog) {
+    const result = await releaseCommit(api, deps, pull.merge_commit_sha!, pull.number);
+    if (result.status === "published") reconciled = result;
+  }
+  // Do not replace a just-recovered release with an unrelated new proposal.
+  return reconciled ?? await releaseCommit(api, deps, sha);
+}
+
+async function releaseCommit(api: Api, deps: Deps, sha: string, backlogNumber?: number): Promise<Result> {
   const associated = await api.list<Pull>(`/commits/${sha}/pulls`);
   const eligible: Pull[] = [];
   for (const summary of associated) {
@@ -259,6 +311,7 @@ export async function runCalver(env: Env, deps: Deps): Promise<Result> {
   }
   requireValue(eligible.length <= 1, "ambiguous release selection: multiple merged version PRs");
   const pull = eligible[0];
+  if (backlogNumber !== undefined && pull?.number !== backlogNumber) return { status: "ignored" };
   if (pull) {
     const changed = await api.list<{ filename: string; status: string; previous_filename?: string }>(`/pulls/${pull.number}/files`);
     requireValue(changed.length === PATHS.length && PATHS.every((path) => changed.some((f) => f.filename === path && f.status === "modified" && !f.previous_filename)), "version PR file scope is not exactly manifests and notes");
@@ -275,6 +328,10 @@ export async function runCalver(env: Env, deps: Deps): Promise<Result> {
     requireValue(p.schema === "calver-plan-v1" && p.repository === REPOSITORY && p.sha === sha && p.operation === input.operation && p.policy === "direct-release" && p.channel === "stable" && p.namespace === "" && p.tag === `v${p.version}` && /^\d{4}\.\d{3,4}\.\d+$/.test(p.version), "shared plan identity mismatch");
   };
   checkPlan(plan);
+  if (backlogNumber !== undefined && plan.version === source.pkg.version && await exactPublishedReplay(api, plan)) {
+    deps.log(`selected release #${backlogNumber} already published at ${sha}; no publication or deploy replay`);
+    return { status: "ignored" };
+  }
   if (plan.date !== deps.now().toISOString().slice(0, 10)) {
     // A past plan is valid only for an exact already-published retry. A fresh
     // version PR that crossed midnight must get a fresh date, not a backdate.
@@ -286,6 +343,9 @@ export async function runCalver(env: Env, deps: Deps): Promise<Result> {
     }
   }
   if (!pull || source.pkg.version !== plan.version) {
+    // A stale historical selection cannot seed a proposal. The current main
+    // invocation below owns refresh, and still requires its own exact-SHA CI.
+    if (backlogNumber !== undefined) return { status: "ignored" };
     // Never refresh from an old main snapshot after newer merges: publishing
     // remains exact-SHA, but new version PRs must start from current main.
     const main = await api.get<Ref>("/git/ref/heads/main");
