@@ -27,6 +27,21 @@ on:
     types: [opened, edited, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
+  # Release PRs are opened with GITHUB_TOKEN, which starts no workflows. Their
+  # required `title` context is therefore dispatched with the PR number and the
+  # exact head: a dispatch event carries no pull_request payload, so the job
+  # reads the live PR metadata through ci/pr-lint.ts instead of an empty title
+  # and body. See docs/releases.md.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to lint
+        required: true
+        type: string
+      head_sha:
+        description: Exact 40-hex head SHA the dispatched checkout must match
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -47,13 +62,20 @@ jobs:
     # e.g. ["ubuntu-latest"]), CI_OVERFLOW_JOBS (JSON job ids) and
     # CI_OVERFLOW_EVENTS (JSON event names) all select the job. Flip back
     # without a PR by deleting CI_OVERFLOW_RUNNER. Sparse checkout + python only.
-    runs-on: ${{ fromJSON((contains(fromJSON(vars.CI_OVERFLOW_JOBS || '[]'), 'title') && contains(fromJSON(vars.CI_OVERFLOW_EVENTS || '[]'), github.event_name) && vars.CI_OVERFLOW_RUNNER) || '["self-hosted","two-selfhosted"]') }}
+    #
+    # A dispatch runs on the standard free public runner before any legacy
+    # routing: the release writer's explicit dispatch must not depend on the
+    # overflow vars, and a truthy value there cannot fall back to self-hosted.
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'ubuntu-latest' || fromJSON((contains(fromJSON(vars.CI_OVERFLOW_JOBS || '[]'), 'title') && contains(fromJSON(vars.CI_OVERFLOW_EVENTS || '[]'), github.event_name) && vars.CI_OVERFLOW_RUNNER) || '["self-hosted","two-selfhosted"]') }}
     timeout-minutes: 5
     steps:
+      # The dispatch helper lives in ci/, so the sparse tree carries it too.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: .github
+          sparse-checkout: |
+            .github
+            ci
           sparse-checkout-cone-mode: true
 
       - name: Unit-test the lint
@@ -69,3 +91,13 @@ jobs:
           REPO_PRIVATE: ${{ github.event.repository.private }}
           COMMITS: ${{ toJSON(github.event.commits) }}
         run: python3 .github/scripts/pr_standards.py
+
+      # Dispatch path: the payload above is empty for a dispatched run, so the
+      # real PR metadata is fetched and bound to this exact head first.
+      - name: Check dispatched PR title and body
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+        run: node ci/pr-lint.ts

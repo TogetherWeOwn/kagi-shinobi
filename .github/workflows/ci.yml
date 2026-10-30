@@ -30,7 +30,7 @@ jobs:
     # CI_OVERFLOW_EVENTS (JSON event names) all select the job. Flip back
     # without a PR by deleting CI_OVERFLOW_RUNNER. Hosted minutes come from
     # the included allowance; the overflow guard reverts at 45k or any net spend.
-    runs-on: ${{ fromJSON((contains(fromJSON(vars.CI_OVERFLOW_JOBS || '[]'), 'changes') && contains(fromJSON(vars.CI_OVERFLOW_EVENTS || '[]'), github.event_name) && vars.CI_OVERFLOW_RUNNER) || '["self-hosted","two-selfhosted"]') }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'ubuntu-latest' || fromJSON((contains(fromJSON(vars.CI_OVERFLOW_JOBS || '[]'), 'changes') && contains(fromJSON(vars.CI_OVERFLOW_EVENTS || '[]'), github.event_name) && vars.CI_OVERFLOW_RUNNER) || '["self-hosted","two-selfhosted"]') }}
     timeout-minutes: 5
     outputs:
       code: ${{ steps.filter.outputs.code }}
@@ -83,7 +83,7 @@ jobs:
     # Runner routing: see the note on `changes` above. No job container:
     # node + workerd only — no services, no browsers (Playwright uses its
     # `request` fixture only, and CI never downloads browser binaries).
-    runs-on: ${{ fromJSON((contains(fromJSON(vars.CI_OVERFLOW_JOBS || '[]'), 'test') && contains(fromJSON(vars.CI_OVERFLOW_EVENTS || '[]'), github.event_name) && vars.CI_OVERFLOW_RUNNER) || '["self-hosted","two-selfhosted"]') }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'ubuntu-latest' || fromJSON((contains(fromJSON(vars.CI_OVERFLOW_JOBS || '[]'), 'test') && contains(fromJSON(vars.CI_OVERFLOW_EVENTS || '[]'), github.event_name) && vars.CI_OVERFLOW_RUNNER) || '["self-hosted","two-selfhosted"]') }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
@@ -129,7 +129,7 @@ jobs:
   # since ruleset writes are 403 for the GitHub App.
   ci-ok:
     # Runner routing: see the note on `changes` above.
-    runs-on: ${{ fromJSON((contains(fromJSON(vars.CI_OVERFLOW_JOBS || '[]'), 'ci-ok') && contains(fromJSON(vars.CI_OVERFLOW_EVENTS || '[]'), github.event_name) && vars.CI_OVERFLOW_RUNNER) || '["self-hosted","two-selfhosted"]') }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'ubuntu-latest' || fromJSON((contains(fromJSON(vars.CI_OVERFLOW_JOBS || '[]'), 'ci-ok') && contains(fromJSON(vars.CI_OVERFLOW_EVENTS || '[]'), github.event_name) && vars.CI_OVERFLOW_RUNNER) || '["self-hosted","two-selfhosted"]') }}
     needs: [changes, test]
     if: always()
     steps:

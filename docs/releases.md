@@ -18,16 +18,24 @@ The workflow checks this public tooling out separately from trusted main
 orchestration. It never executes the selected source commit or an artifact from
 an untrusted CI run. All introduced release jobs run on standard free
 `ubuntu-latest`, including `workflow_run`, which is not covered by the legacy
-overflow event configuration.
+overflow event configuration. The dispatched required jobs (`ci.yml`,
+`pr-lint.yml`, `secret-scan.yml`) select `ubuntu-latest` as their first branch,
+before any legacy `CI_OVERFLOW_*` routing, so an explicit dispatch never falls
+back to a self-hosted runner.
 
 1. A successful full main CI run can **propose** a version. The serialized writer
    updates only `package.json`, `package-lock.json` (both root version fields)
    and `CHANGELOG.md` in one commit on `release/calver`.
 2. The generated `calver:release` PR requires normal review and all required
    checks. GITHUB_TOKEN-created changes do not trigger ordinary PR workflows:
-   explicit full-CI dispatch on the updated branch is required, together with
-   the required PR-conventions and secret-scan checks. Do not merge on a partial
-   set of green checks, add an override, or use an admin merge.
+   the writer explicitly dispatches **all three** required workflows on the
+   updated branch head — `ci.yml`, `pr-lint.yml` and `secret-scan.yml` — and
+   fails closed if any dispatch fails. A dispatched `pr-lint` run has no
+   `pull_request` payload, so its required `title` job reads the live PR
+   metadata through `ci/pr-lint.ts`, binds it to the dispatched PR number and
+   exact head SHA, and only then runs the existing Python policy. Nothing writes
+   a synthetic commit status or check run. Do not merge on a partial set of
+   green checks, add an override, or use an admin merge.
 3. Publication independently fetches the selected PR from GitHub. It must be a
    merged, non-draft, same-repository bot-created `release/calver` → `main` PR
    carrying the selection label, with the exact invocation SHA as its merge

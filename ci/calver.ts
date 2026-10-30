@@ -220,9 +220,16 @@ async function versionPr(api: Api, deps: Deps, sha: string, plan: Plan, source: 
   requireValue(pull && Number.isSafeInteger(pull.number), "version PR creation failed");
   await api.request("POST", `/issues/${pull.number}/labels`, { labels: [LABEL] });
   const head = await api.get<Ref>(`/git/ref/heads/${BRANCH}`);
-  requireValue(head.object.sha === updated.sha, "version branch changed before CI dispatch");
+  requireValue(head.object.sha === updated.sha, "version branch changed before required-check dispatch");
+  // GITHUB_TOKEN-created PRs start no workflows, so every required context has
+  // to be dispatched explicitly on the updated head. A green full CI alone
+  // would still leave the ruleset's title/gitleaks contexts unreported.
   await api.request("POST", "/actions/workflows/ci.yml/dispatches", { ref: BRANCH });
-  deps.log(`version PR #${pull.number}: ${plan.version}; full CI dispatched on ${updated.sha}`);
+  await api.request("POST", "/actions/workflows/pr-lint.yml/dispatches", {
+    ref: BRANCH, inputs: { pr_number: String(pull.number), head_sha: updated.sha },
+  });
+  await api.request("POST", "/actions/workflows/secret-scan.yml/dispatches", { ref: BRANCH });
+  deps.log(`version PR #${pull.number}: ${plan.version}; full CI and required checks dispatched on ${updated.sha}`);
   return { status: "version-pr", number: pull.number, version: plan.version, headSha: updated.sha };
 }
 
