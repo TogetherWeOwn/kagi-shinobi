@@ -289,7 +289,8 @@ export async function runCalver(env: Env, deps: Deps): Promise<Result> {
   // GitHub concurrency replaces pending entries. The closed PRs, not callback
   // delivery or process memory, are the durable release-selection backlog.
   const closed = await api.list<Pull>("/pulls?state=closed&base=main");
-  const backlog = closed.filter((p) => selected(p, REPOSITORY) && p.merged === true && p.merged_at &&
+  // List summaries omit `merged`; releaseCommit independently checks the detail.
+  const backlog = closed.filter((p) => selected(p, REPOSITORY) && p.state === "closed" && p.merged_at &&
     !p.draft && p.merge_commit_sha !== sha && SHA.test(p.merge_commit_sha ?? ""));
   backlog.sort((a, b) => a.merged_at!.localeCompare(b.merged_at!) || a.number - b.number);
   let reconciled: Result | undefined;
