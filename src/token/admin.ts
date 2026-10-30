@@ -1,5 +1,6 @@
 // /admin/token and /admin/refresh handlers.
 
+import pkg from "../../package.json";
 import type { Env } from "../env.js";
 import { requireBearer } from "../util/auth.js";
 import { jsonError, jsonOk } from "../util/errors.js";
@@ -64,5 +65,6 @@ export async function handleHealth(request: Request, env: Env): Promise<Response
     // Behind the bearer like every other detail here: the SHA identifies the
     // deployed build, which is operator deployment state, not liveness.
     buildSha: env.BUILD_SHA ?? "dev",
+    version: pkg.version,
   });
 }
