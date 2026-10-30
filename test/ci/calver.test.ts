@@ -28,7 +28,11 @@
 // All GitHub traffic below is an offline HTTP fake. Planner answers are literal
 // fixtures, not a second allocator. Initial missing-module red is intentional;
 // load in beforeEach so every acceptance case remains visible in the red run.
-import { beforeEach, describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { disposePinnedCalver, validatePlanFixture } from "./shared-calver";
+
+afterAll(disposePinnedCalver);
 
 const REPO = "TogetherWeOwn/kagi-shinobi";
 const SHA = "a".repeat(40);
@@ -69,6 +73,21 @@ interface Plan extends PlanInput {
   previousStableTag: string | null;
   id: string;
 }
+// Construct well-formed opaque plan fixtures, including the shared contract's
+// canonical integrity digest. Allocation/publication behavior is not duplicated;
+// settlement/read-growth tests separately run the exact pinned real engine.
+function sealedPlan(plan: Plan): Plan {
+  const ordered = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(ordered);
+    if (value !== null && typeof value === "object") return Object.fromEntries(Object.keys(value).sort()
+      .map((key) => [key, ordered((value as Json)[key])]));
+    return value;
+  };
+  const { id: _id, ...payload } = plan;
+  const result = { ...payload, id: createHash("sha256").update(JSON.stringify(ordered(payload))).digest("hex") };
+  validatePlanFixture(result);
+  return result;
+}
 interface Publication extends Plan {
   created: boolean;
   releaseUrl: string;
@@ -94,6 +113,9 @@ interface Result {
   headSha?: string;
   releaseUrl?: string;
   deploymentDispatched?: boolean;
+  // Admission is provider permission to run native PR-origin checks, not a
+  // claim that required checks passed or that review/merge is authorized.
+  checkAdmission?: { state: "awaiting_pr_event" | "approval_required" | "admitted"; headSha: string; runIds: number[] };
 }
 type RunCalver = (env: Env, deps: Deps) => Promise<Result>;
 let runCalver: RunCalver;
@@ -177,6 +199,28 @@ const ciRun = (sha: string, event = "push", id = 8): CiRun => ({
   path: ".github/workflows/ci.yml", run_attempt: 1,
 });
 
+interface PrAdmissionRun {
+  id: number;
+  name: string;
+  path: string;
+  event: string;
+  status: string;
+  conclusion: string | null;
+  head_sha: string;
+  head_branch: string;
+  head_repository: ReturnType<typeof repo>;
+  repository: ReturnType<typeof repo>;
+  pull_requests: Array<{ number: number; head: { sha: string; ref: string }; base: { ref: string } }>;
+}
+const prAdmissionRuns = (number = 42, sha = UPDATED_SHA): PrAdmissionRun[] => [
+  ["CI", "ci.yml"], ["pr-lint", "pr-lint.yml"], ["secret-scan", "secret-scan.yml"],
+].map(([name, path], index) => ({
+  id: 101 + index, name, path: `.github/workflows/${path}`, event: "pull_request",
+  status: "waiting", conclusion: null, head_sha: sha, head_branch: BRANCH,
+  head_repository: repo(), repository: repo(),
+  pull_requests: [{ number, head: { sha, ref: BRANCH }, base: { ref: "main" } }],
+}));
+
 interface World {
   pull: Pull | null;
   openPull: Pull | null;
@@ -194,6 +238,8 @@ interface World {
   time: string;
   ciEvent?: string;
   ciRuns?: CiRun[];
+  admissionRuns?: PrAdmissionRun[];
+  approvalRequiredRunIds?: number[];
   proposal?: ProposalState;
   returnedLabels?: string[];
   afterPlan?: () => void;
@@ -326,6 +372,16 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
         object: { type: "commit", sha: w.existingTagSha ?? w.existingPlan.sha },
       });
       const runs = w.ciRuns ?? [ciRun(SHA, w.ciEvent ?? "push")];
+      const admissionRuns = w.admissionRuns ?? (openPull ? prAdmissionRuns(openPull.number, branchSha ?? UPDATED_SHA) : []);
+      if (path === "/actions/runs") {
+        const event = url.searchParams.get("event");
+        const sha = url.searchParams.get("head_sha");
+        const status = url.searchParams.get("status");
+        const approvalIds = w.approvalRequiredRunIds ?? (w.admissionRuns === undefined ? admissionRuns.map((run) => run.id) : []);
+        const matching = [...runs, ...admissionRuns].filter((run) => (!event || run.event === event) && (!sha || run.head_sha === sha) &&
+          (!status || (status === "action_required" ? approvalIds.includes(run.id) : run.status === status || run.conclusion === status)));
+        return json({ total_count: matching.length, workflow_runs: matching });
+      }
       if (path === "/actions/workflows/ci.yml/runs") {
         const requestedSha = url.searchParams.get("head_sha");
         const matching = requestedSha ? runs.filter((run) => run.head_sha === requestedSha) : runs;
@@ -333,7 +389,7 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
       }
       const runRoute = path.match(/^\/actions\/runs\/(\d+)$/);
       if (runRoute) {
-        const run = runs.find((entry) => entry.id === Number(runRoute[1]));
+        const run = [...runs, ...admissionRuns].find((entry) => entry.id === Number(runRoute[1]));
         return run ? json(run) : json({}, 404);
       }
     }
@@ -375,6 +431,7 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
     if (method === "POST" && path === "/pulls") {
       openPull = { ...selectedPull(), number: w.pull ? 43 : 42, state: "open", merged: false, merged_at: "", draft: body.draft === true,
         head: { ref: BRANCH, sha: branchSha ?? UPDATED_SHA, repo: repo() },
+        base: { ref: "main", sha: w.mainSha, repo: repo() },
         title: String(body.title), body: String(body.body ?? ""), labels: [] };
       persist();
       return json(openPull, 201);
@@ -417,12 +474,12 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
       plan: async (input) => {
         planInputs.push(structuredClone(input));
         const answer = w.planBySha?.[input.sha] ?? w.plans[Math.min(planned.length, w.plans.length - 1)];
-        const plan: Plan = {
+        const plan = sealedPlan({
           schema: "calver-plan-v1", repository: REPO, channel: "stable", namespace: "", latest: "auto",
           sha: input.sha, operation: input.operation, policy: "direct-release", date: "2026-10-30",
           version: VERSION, tag: TAG, repairDate: null, sourceCanary: null, source: null, evidence: null,
           previousStableTag: "v1.0.1", id: "1".repeat(64), ...answer,
-        };
+        });
         planned.push(plan);
         w.afterPlan?.();
         return plan;
@@ -487,8 +544,10 @@ describe("CalVer version PRs, not main-merge releases", () => {
   });
 
   it("refreshes the existing version PR rather than creating a competing PR", async () => {
-    const openPull = { ...selectedPull(), state: "open", merged: false, merged_at: "" };
-    const h = harness(world({ pull: null, openPull, files: manifests("1.0.1") }));
+    const state = proposalState();
+    const w = world({ pull: null, proposal: state, files: manifests("1.0.1") });
+    await harness(w).run();
+    const h = harness(w);
     expect(await h.run()).toMatchObject({ status: "version-pr", number: 42, headSha: UPDATED_SHA });
     expect(h.calls.some((c) => c.method === "POST" && c.path === "/pulls")).toBe(false);
     expectVersionCommit(h, VERSION);
@@ -536,8 +595,10 @@ describe("CalVer version PRs, not main-merge releases", () => {
 
 describe("generated version PR required checks", () => {
   it.each([false, true])("dispatches every real required workflow on the new branch head, existing PR=%j", async (existing) => {
-    const openPull = existing ? { ...selectedPull(), state: "open", merged: false, merged_at: "" } : null;
-    const h = harness(world({ pull: null, openPull, files: manifests("1.0.1") }));
+    const state = proposalState();
+    const w = world({ pull: null, proposal: state, files: manifests("1.0.1") });
+    if (existing) await harness(w).run();
+    const h = harness(w);
     expect(await h.run()).toMatchObject({ status: "version-pr", number: 42, headSha: UPDATED_SHA });
     for (const workflow of ["ci.yml", "pr-lint.yml", "secret-scan.yml"]) {
       expect(h.dispatches(workflow), workflow).toHaveLength(1);
@@ -572,6 +633,72 @@ describe("generated version PR required checks", () => {
     expect(h.dispatches(workflow)).toHaveLength(1);
     expectNoPublication(h);
     expect(h.calls.some((call) => call.method !== "GET" && /\/statuses\/|\/check-runs/.test(call.path))).toBe(false);
+  });
+});
+
+// GitHub documents that workflow_dispatch job checks do not satisfy required
+// status checks in a branch ruleset, while GITHUB_TOKEN-created PR-origin runs
+// can require native approval. Keep explicit full-CI dispatch, but separately
+// observe GET /actions/runs?event=pull_request&head_sha={newHead}. Result's
+// checkAdmission describes admission only, never passed checks or merge consent.
+// Approval is observed with the documented status=action_required list filter;
+// no undocumented status-versus-conclusion response-field placement is assumed.
+// There is no documented same-repository token self-approval authority, so no approval POST,
+// new credential, synthetic SUCCESS, ruleset change or auto-merge belongs here.
+// Sources: https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks
+// https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow
+describe("native PR-origin required-check admission is distinct from dispatch", () => {
+  const proposal = (over: Partial<World> = {}) => harness(world({ pull: null, files: manifests("1.0.1"), ...over }));
+  const observed = (h: ReturnType<typeof harness>) => {
+    expect(h.calls.some((call) => call.method === "GET" && call.path === "/actions/runs" &&
+      call.query.get("event") === "pull_request" && call.query.get("head_sha") === UPDATED_SHA)).toBe(true);
+    expect(h.calls.some((call) => call.method !== "GET" && (
+      /\/approve$|\/statuses\/|\/check-runs|\/rulesets(?:\/|$)|\/protection(?:\/|$)|\/secrets(?:\/|$)|\/access_tokens|\/tokens|\/pulls\/\d+\/(?:merge|reviews)$/.test(call.path) ||
+      call.path === "/graphql" && /mergePullRequest|enablePullRequestAutoMerge|createCheckRun|createCommitStatus/.test(JSON.stringify(call.body))
+    ))).toBe(false);
+    expectNoPublication(h);
+  };
+
+  it("keeps full-CI dispatch but does not admit green workflow_dispatch job checks", async () => {
+    const admissionRuns = prAdmissionRuns().map((run) => ({ ...run, event: "workflow_dispatch", status: "completed", conclusion: "success", pull_requests: [] }));
+    const h = proposal({ admissionRuns });
+    expect(await h.run()).toMatchObject({ status: "version-pr", checkAdmission: { state: "awaiting_pr_event", headSha: UPDATED_SHA, runIds: [] } });
+    for (const workflow of ["ci.yml", "pr-lint.yml", "secret-scan.yml"]) expect(h.dispatches(workflow)).toHaveLength(1);
+    observed(h);
+  });
+
+  it("reports native approval required using the documented action_required filter", async () => {
+    const admissionRuns = prAdmissionRuns();
+    const h = proposal({ admissionRuns, approvalRequiredRunIds: admissionRuns.map((run) => run.id) });
+    const result = await h.run();
+    expect(result).toMatchObject({ checkAdmission: { state: "approval_required", headSha: UPDATED_SHA } });
+    expect(result.checkAdmission!.runIds.length).toBeGreaterThan(0);
+    expect(h.calls.some((call) => call.method === "GET" && call.path === "/actions/runs" &&
+      call.query.get("event") === "pull_request" && call.query.get("head_sha") === UPDATED_SHA && call.query.get("status") === "action_required")).toBe(true);
+    observed(h);
+  });
+
+  it("recognizes provider-admitted PR-origin runs without calling them completed checks or approving them", async () => {
+    // This is a later authoritative provider state after native approval, not
+    // an approval action the writer or its token is assumed able to perform.
+    const admissionRuns = prAdmissionRuns().map((run) => ({ ...run, status: "in_progress", conclusion: null }));
+    const h = proposal({ admissionRuns });
+    const result = await h.run();
+    expect(result).toMatchObject({ status: "version-pr", checkAdmission: { state: "admitted", headSha: UPDATED_SHA } });
+    expect(new Set(result.checkAdmission!.runIds)).toEqual(new Set([101, 102, 103]));
+    observed(h);
+  });
+
+  it("does not use a different PR head's native runs as admission for the updated version branch", async () => {
+    const h = proposal({ admissionRuns: prAdmissionRuns(42, OTHER_SHA) });
+    expect(await h.run()).toMatchObject({ checkAdmission: { state: "awaiting_pr_event", headSha: UPDATED_SHA, runIds: [] } });
+    observed(h);
+  });
+
+  it("fails closed on admission-read API failure instead of reporting dispatch as admission", async () => {
+    const h = proposal({ status: { "GET /actions/runs": 403 } });
+    await expect(h.run()).rejects.toThrow(/HTTP 403/);
+    expectNoPublication(h);
   });
 });
 
@@ -772,6 +899,48 @@ describe("partial proposal creation resumes from independently verified provenan
     expectNoPublication(retry);
   });
 
+  it("revalidates the current commit despite the open PR retaining its bot author and marker", async () => {
+    const state = proposalState();
+    const w = world({ pull: null, proposal: state, files: manifests("1.0.1") });
+    await harness(w).run();
+    const owned = state.pull;
+    if (!owned) throw new Error("fixture did not create an owned proposal");
+    const unknown = "9".repeat(40);
+    const contributor = { name: "contributor", email: "contributor@example.test" };
+    state.commits[unknown] = {
+      ...state.commits[UPDATED_SHA], sha: unknown, message: "fix: contributor changes the generated branch",
+      parents: [{ sha: UPDATED_SHA }], author: contributor, committer: contributor,
+    };
+    state.branchSha = unknown;
+    state.pull = { ...owned, head: { ...owned.head, sha: unknown } };
+    const h = harness(w);
+    await expect(h.run()).rejects.toThrow(/owner|ownership|generated|provenance|head/i);
+    expect(state.branchSha).toBe(unknown);
+    expect(state.pull).toMatchObject({ user: { login: "github-actions[bot]" }, labels: [{ name: LABEL }], head: { sha: unknown } });
+    expect(h.calls.some((call) => call.method === "GET" && [ `/git/commits/${unknown}`, `/commits/${unknown}` ].includes(call.path))).toBe(true);
+    expect(h.calls.some((call) => call.method === "PATCH" && call.path.includes("/refs/"))).toBe(false);
+    expectNoPublication(h);
+  });
+
+  it("retains refusal when the live ref moved beyond the previously fetched open-PR head", async () => {
+    const state = proposalState();
+    const w = world({ pull: null, proposal: state, files: manifests("1.0.1") });
+    await harness(w).run();
+    const unknown = "9".repeat(40);
+    const contributor = { name: "contributor", email: "contributor@example.test" };
+    state.commits[unknown] = {
+      ...state.commits[UPDATED_SHA], sha: unknown, message: "fix: concurrent contributor update",
+      parents: [{ sha: UPDATED_SHA }], author: contributor, committer: contributor,
+    };
+    // PR metadata is the earlier snapshot; the subsequent ref read is newer.
+    state.branchSha = unknown;
+    const h = harness(w);
+    await expect(h.run()).rejects.toThrow(/owner|ownership|generated|provenance|head/i);
+    expect(state.branchSha).toBe(unknown);
+    expect(h.calls.some((call) => call.method === "PATCH" && call.path.includes("/refs/"))).toBe(false);
+    expectNoPublication(h);
+  });
+
   it("refuses a genuinely unknown branch even when its manifests look like a version proposal", async () => {
     const state = proposalState();
     state.branchSha = OTHER_SHA;
@@ -881,6 +1050,20 @@ describe("selected exact-SHA publication", () => {
       expect(reads.length).toBeGreaterThan(0);
       expect(reads.every((c) => c.query.get("ref") === SHA)).toBe(true);
     }
+  });
+
+  it("refuses a draft authoritative selected detail on the current/direct path", async () => {
+    const h = harness(world({ backlog: [], pullDetails: { 42: { ...selectedPull(), draft: true } } }));
+    let refusal: unknown;
+    let result: Result | undefined;
+    try { result = await h.run(); } catch (error) { refusal = error; }
+    if (refusal !== undefined) {
+      expect(refusal).toBeInstanceOf(Error);
+      expect((refusal as Error).message).not.toMatch(/unexpected GitHub request|unexpected origin/);
+      expect((refusal as Error).message).toMatch(/draft|selection|selected|eligible|merged/i);
+    } else expect(result?.status).not.toBe("published");
+    expect(h.calls.some((call) => call.method === "GET" && call.path === "/pulls/42")).toBe(true);
+    expectNoPublication(h);
   });
 
   it("keeps publishing the selected merge SHA even when main has advanced", async () => {
@@ -1020,11 +1203,15 @@ describe("failure and replay boundaries", () => {
     const retry = harness(world({
       plans: [original], existingPlan: original, publication: { created: false },
     }), { GITHUB_RUN_ID: "999", GITHUB_RUN_ATTEMPT: "2" });
-    expect(await retry.run()).toMatchObject({ status: "published", tag: TAG, sha: SHA });
-    expect(retry.planInputs[0].operation).toBe(h.planInputs[0].operation);
-    expect(retry.published[0].plan).toEqual(original);
-    expect(retry.published[0].options?.repair).not.toBe(true);
-    expect(retry.effects).toEqual(["publish", "dispatch-deploy"]);
+    // A writer retry recognizes the same operation/version/SHA as settled.
+    // Explicit redeployment belongs to the existing guarded Deploy workflow.
+    expect(await retry.run()).toMatchObject({ status: "published", tag: TAG, sha: SHA, version: VERSION, deploymentDispatched: false });
+    expect(retry.planInputs).toEqual([]);
+    expect(retry.published).toEqual([]);
+    expect(retry.effects).toEqual([]);
+    expect(retry.calls.some((call) => call.path === `/releases/tags/${TAG}`)).toBe(true);
+    expect(retry.calls.some((call) => call.path === `/git/tags/${TAG_OBJECT_SHA}`)).toBe(true);
+    expect(retry.calls.some((call) => call.method === "DELETE" || call.method === "PATCH" && call.path.includes("tags"))).toBe(false);
   });
 
   it("an exact published replay is safe across midnight, not a fresh backdated release", async () => {
@@ -1035,8 +1222,12 @@ describe("failure and replay boundaries", () => {
       time: "2026-10-31T00:01:00Z", plans: [original], existingPlan: original,
       publication: { created: false },
     }), { GITHUB_RUN_ID: "101" });
-    expect(await retry.run()).toMatchObject({ status: "published", version: VERSION });
-    expect(retry.published[0].plan).toEqual(original);
+    expect(await retry.run()).toMatchObject({ status: "published", version: VERSION, tag: TAG, sha: SHA, deploymentDispatched: false });
+    expect(retry.planInputs).toEqual([]);
+    expect(retry.published).toEqual([]);
+    expect(retry.effects).toEqual([]);
+    expect(retry.calls.some((call) => call.path === `/releases/tags/${TAG}`)).toBe(true);
+    expect(retry.calls.some((call) => call.path === `/git/tags/${TAG_OBJECT_SHA}`)).toBe(true);
     expect(retry.calls.some((c) => c.method === "DELETE" || c.method === "PATCH" && c.path.includes("tags"))).toBe(false);
   });
 
@@ -1045,7 +1236,7 @@ describe("failure and replay boundaries", () => {
     await first.run();
     const original = first.planned[0];
     const h = harness(world({
-      existingPlan: different === "other operation" ? { ...original, operation: "unrelated-operation" } : original,
+      existingPlan: different === "other operation" ? sealedPlan({ ...original, operation: "unrelated-operation" }) : original,
       existingTagSha: different === "other SHA" ? OTHER_SHA : SHA,
       publishError: Object.assign(new Error(`published tag collision: ${different}`), { status: 422 }),
     }));

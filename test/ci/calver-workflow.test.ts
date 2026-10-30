@@ -94,6 +94,18 @@ describe("CalVer workflow safety wiring", () => {
     for (const event of ["push", "workflow_dispatch"]) expect(allows("", {}, event)).toBe(true);
   });
 
+  it("pins privileged writer and dispatched lint setup-node actions to immutable full commits", () => {
+    const writer = jobs(calverWorkflow()).find((job) => /\bnode\s+ci\/calver\.ts\b/.test(job))!;
+    const title = jobs(read("pr-lint.yml")).find((job) => /^ {2}title:/m.test(job))!;
+    const refs = (job: string) => Array.from(job.matchAll(/\buses:\s*actions\/setup-node@([^\s#]+)/g), (match) => match[1]);
+    expect(refs(writer).length, "the privileged TypeScript writer selects a runtime").toBeGreaterThan(0);
+    // The existing dispatch-path test separately requires lint setup presence,
+    // compatible Node and ordering. Every setup declared in either job is pinned.
+    for (const [name, job] of [["writer", writer], ["title", title]]) {
+      for (const ref of refs(job)) expect(ref, `${name} setup-node must not use a mutable tag`).toMatch(/^[0-9a-f]{40}$/i);
+    }
+  });
+
   it("serializes the writer without cancelling an in-flight release", () => {
     const text = calverWorkflow();
     // Accept block or flow YAML and either key order; these are policy checks,
