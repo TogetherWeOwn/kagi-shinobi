@@ -106,7 +106,7 @@ const selectedPull = () => ({
   number: 42,
   state: "closed",
   merged: true,
-  merged_at: "2026-10-30T06:00:00Z",
+  merged_at: "2026-10-30T06:00:00Z" as string | null,
   merge_commit_sha: SHA,
   draft: false,
   user: { login: "github-actions[bot]", type: "Bot" },
@@ -183,6 +183,8 @@ interface World {
   associated: Pull[] | null;
   associatedBySha?: Record<string, Pull[]>;
   backlog?: Pull[];
+  pullDetails?: Record<number, Pull>;
+  compareStatuses?: Record<string, string>;
   files: Record<string, string>;
   filesBySha?: Record<string, Record<string, string>>;
   changedFiles: string[];
@@ -221,6 +223,7 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
     ...envOver,
   };
   const calls: Call[] = [];
+  const pullLists: Array<Array<Omit<Pull, "merged">>> = [];
   const effects: string[] = [];
   const logs: string[] = [];
   const planned: Plan[] = [];
@@ -268,7 +271,7 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
       ];
       const pullRoute = path.match(/^\/pulls\/(\d+)(?:\/(files|reviews))?$/);
       if (pullRoute) {
-        const pull = pulls.find((p) => p.number === Number(pullRoute[1]));
+        const pull = w.pullDetails?.[Number(pullRoute[1])] ?? pulls.find((p) => p.number === Number(pullRoute[1]));
         if (!pull) return json({}, 404);
         if (pullRoute[2] === "files") return json(w.changedFiles.map((filename) => ({ filename, status: "modified" })));
         if (pullRoute[2] === "reviews") return json([{ id: 1, state: "APPROVED", commit_id: pull.head.sha, user: { login: "reviewer", type: "User" } }]);
@@ -278,7 +281,13 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
         const filter = url.searchParams.get("state") ?? "open";
         const source = filter === "closed" && w.backlog !== undefined ? w.backlog : pulls;
         const unique = Array.from(new Map(source.map((pull) => [pull.number, pull])).values());
-        return json(unique.filter((pull) => filter === "all" || pull.state === filter));
+        // GitHub's list summaries expose merged_at, not the detail-only merged
+        // boolean. Keep detail responses separate so discovery cannot authorize
+        // publication without the independently fetched merged/merge-SHA checks.
+        const summaries = unique.filter((pull) => filter === "all" || pull.state === filter)
+          .map(({ merged: _merged, ...summary }) => ({ ...summary, merged_at: summary.merged_at || null }));
+        pullLists.push(summaries);
+        return json(summaries);
       }
       if (path === "/git/ref/heads/main") return json({ ref: "refs/heads/main", object: { type: "commit", sha: w.mainSha } });
       if (path === `/git/ref/heads/${BRANCH}`) return branchSha
@@ -299,6 +308,7 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
         const content = files[name];
         return content === undefined ? json({}, 404) : json({ type: "file", encoding: "base64", sha: TREE_SHA, content: Buffer.from(content).toString("base64") });
       }
+      if (w.compareStatuses?.[path]) return json({ status: w.compareStatuses[path] });
       if (path === `/compare/${SHA}...main`) return json({ status: "ahead" });
       if (path === `/compare/main...${SHA}`) return json({ status: "behind" });
       if (path === `/releases/tags/${TAG}`) return w.existingPlan ? json({
@@ -426,7 +436,7 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
     },
   };
   return {
-    env, deps, calls, effects, logs, planned, planInputs, published,
+    env, deps, calls, pullLists, effects, logs, planned, planInputs, published,
     candidate: () => candidate, pull: () => openPull,
     run: () => runCalver(env, deps),
     dispatches: (workflow: string) => calls.filter((c) => c.method === "POST" && c.path === `/actions/workflows/${workflow}/dispatches`),
@@ -588,6 +598,67 @@ describe("coalesced callbacks reconcile the unpublished selected-release backlog
     expect(h.calls.some((call) => call.path === "/contents/package.json" && call.query.get("ref") === SHA)).toBe(true);
     expect(h.calls.some((call) => call.method === "GET" && call.path === "/pulls/42")).toBe(true);
     expect(h.calls.some((call) => call.path === "/actions/workflows/ci.yml/runs" && call.query.get("head_sha") === SHA)).toBe(true);
+  });
+
+  it("rediscovers selected A from real list summaries without the detail-only merged boolean", async () => {
+    const w = backlogWorld([selectedPull()]);
+    w.pullDetails = { 42: selectedPull() };
+    const h = callbackForLaterMerge(w);
+    await h.run();
+    const summary = h.pullLists.flat().find((pull) => pull.number === 42);
+    expect(summary).toMatchObject({ number: 42, state: "closed", merged_at: "2026-10-30T06:00:00Z", merge_commit_sha: SHA });
+    expect(summary).not.toHaveProperty("merged");
+    expect(h.calls.some((call) => call.method === "GET" && call.path === "/pulls/42"), "list discovery must be followed by authoritative detail lookup").toBe(true);
+    expect(h.published.map(({ plan }) => plan.sha)).toEqual([SHA]);
+    expect(h.published[0].plan.version).toBe(VERSION);
+    expect(h.dispatches("deploy.yml")[0]?.body).toEqual({ ref: "main", inputs: { tag: TAG } });
+  });
+
+  it("does not turn a merely closed, unmerged list summary into a release", async () => {
+    const closed = { ...selectedPull(), merged: false, merged_at: null };
+    const w = backlogWorld([closed]);
+    w.pullDetails = { 42: closed };
+    const h = callbackForLaterMerge(w);
+    await h.run();
+    const summary = h.pullLists.flat().find((pull) => pull.number === 42);
+    expect(summary).toMatchObject({ state: "closed", merged_at: null });
+    expect(summary).not.toHaveProperty("merged");
+    expectNoPublication(h);
+  });
+
+  it.each([
+    ["merged:false", (pull: Pull): Pull => ({ ...pull, merged: false })],
+    ["a different merge SHA", (pull: Pull): Pull => ({ ...pull, merge_commit_sha: OTHER_SHA })],
+  ] as const)("never publishes a list candidate whose fetched detail reports %s", async (scenario, change) => {
+    const listed = selectedPull();
+    const detail = change(listed);
+    const w = backlogWorld([listed]);
+    w.pullDetails = { 42: detail };
+    // Keep the other evidence eligible so neither refusal can pass merely
+    // because a timestamp, commit association, CI run or manifest is missing.
+    // In particular merged:false overrides the otherwise eligible timestamp.
+    if (scenario === "a different merge SHA") {
+      w.associatedBySha = { ...w.associatedBySha, [OTHER_SHA]: [detail] };
+      w.filesBySha = { ...w.filesBySha, [OTHER_SHA]: manifests() };
+      w.ciRuns = [...(w.ciRuns ?? []), ciRun(OTHER_SHA, "push", 10)];
+      w.compareStatuses = {
+        [`/compare/${OTHER_SHA}...main`]: "ahead",
+        [`/compare/main...${OTHER_SHA}`]: "behind",
+      };
+    }
+    const h = callbackForLaterMerge(w);
+    let refusal: unknown;
+    try { await h.run(); } catch (error) { refusal = error; }
+    if (refusal !== undefined) {
+      expect(refusal).toBeInstanceOf(Error);
+      expect((refusal as Error).message).not.toMatch(/unexpected GitHub request|unexpected origin/);
+      expect((refusal as Error).message).toMatch(/merged|selection|selected|merge.*sha|association|mismatch/i);
+    }
+    const summary = h.pullLists.flat().find((pull) => pull.number === 42);
+    expect(summary).toMatchObject({ merged_at: listed.merged_at, merge_commit_sha: SHA });
+    expect(summary).not.toHaveProperty("merged");
+    expect(h.calls.some((call) => call.method === "GET" && call.path === "/pulls/42"), "candidate must be refused using independently fetched detail, not ignored wholesale").toBe(true);
+    expectNoPublication(h);
   });
 
   it("does not republish an already-published release while reconciling a later callback", async () => {
