@@ -117,6 +117,13 @@ const selectedPull = () => ({
   body: `Release ${VERSION}`,
 });
 type Pull = ReturnType<typeof selectedPull>;
+const completion = (event: string, over: Json = {}) => ({
+  action: "completed", repository: repo(), workflow_run: {
+    id: 8, name: "CI", path: ".github/workflows/ci.yml", event,
+    head_branch: "main", head_sha: SHA, head_repository: repo(),
+    status: "completed", conclusion: "success", ...over,
+  },
+});
 
 function manifests(version = VERSION): Record<string, string> {
   return {
@@ -135,15 +142,58 @@ function manifests(version = VERSION): Record<string, string> {
   };
 }
 
+interface ProposalCommit {
+  sha: string;
+  message: string;
+  tree: { sha: string };
+  parents: Array<{ sha: string }>;
+  author: { name: string; email: string };
+  committer: { name: string; email: string };
+}
+interface ProposalState {
+  branchSha: string | null;
+  pull: Pull | null;
+  files: Record<string, string>;
+  commits: Record<string, ProposalCommit>;
+}
+const proposalState = (): ProposalState => ({ branchSha: null, pull: null, files: {}, commits: {} });
+
+interface CiRun {
+  id: number;
+  name: string;
+  event: string;
+  status: string;
+  conclusion: string;
+  head_sha: string;
+  head_branch: string;
+  head_repository: ReturnType<typeof repo>;
+  repository: ReturnType<typeof repo>;
+  path: string;
+  run_attempt: number;
+}
+const ciRun = (sha: string, event = "push", id = 8): CiRun => ({
+  id, name: "CI", event, status: "completed", conclusion: "success", head_sha: sha,
+  head_branch: "main", head_repository: repo(), repository: repo(),
+  path: ".github/workflows/ci.yml", run_attempt: 1,
+});
+
 interface World {
   pull: Pull | null;
   openPull: Pull | null;
   associated: Pull[] | null;
+  associatedBySha?: Record<string, Pull[]>;
+  backlog?: Pull[];
   files: Record<string, string>;
+  filesBySha?: Record<string, Record<string, string>>;
   changedFiles: string[];
   mainSha: string;
   plans: Array<Partial<Plan>>;
+  planBySha?: Record<string, Partial<Plan>>;
   time: string;
+  ciEvent?: string;
+  ciRuns?: CiRun[];
+  proposal?: ProposalState;
+  returnedLabels?: string[];
   afterPlan?: () => void;
   publishError?: Error;
   publication?: Partial<Publication>;
@@ -176,12 +226,24 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
   const planned: Plan[] = [];
   const planInputs: PlanInput[] = [];
   const published: Array<{ plan: Plan; options?: Json }> = [];
-  let branchSha = w.openPull?.head.sha ?? null;
-  let openPull = w.openPull;
-  let candidate: Record<string, string> = {};
+  const state = w.proposal;
+  let branchSha = state ? state.branchSha : w.openPull?.head.sha ?? null;
+  let openPull = state ? state.pull : w.openPull;
+  let candidate: Record<string, string> = { ...state?.files };
   const blobs = new Map<string, string>();
   const updatedTree = "8".repeat(40);
   let publicationFinished = false;
+  const persist = () => {
+    if (!state) return;
+    state.branchSha = branchSha;
+    state.pull = openPull;
+    state.files = { ...candidate };
+  };
+  const updateBranch = (sha: string) => {
+    branchSha = sha;
+    if (openPull?.head.ref === BRANCH) openPull = { ...openPull, head: { ...openPull.head, sha } };
+    persist();
+  };
   const json = (value: unknown, status = 200) =>
     new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
   const noContent = () => new Response(null, { status: 204 });
@@ -197,9 +259,12 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
     if (forced) return json({ message: "provider-body-do-not-log" }, forced);
     if (method === "GET") {
       if (path === "") return json(repo());
-      if (path === `/commits/${SHA}/pulls`) return json(w.associated ?? (w.pull ? [w.pull] : []));
+      const associatedRoute = path.match(/^\/commits\/([0-9a-f]{40})\/pulls$/);
+      if (associatedRoute) return json(w.associatedBySha?.[associatedRoute[1]] ??
+        (associatedRoute[1] === SHA ? w.associated ?? (w.pull ? [w.pull] : []) : []));
       const pulls = [
         ...(w.associated ?? []), ...(w.pull ? [w.pull] : []), ...(openPull ? [openPull] : []),
+        ...(w.backlog ?? []), ...Object.values(w.associatedBySha ?? {}).flat(),
       ];
       const pullRoute = path.match(/^\/pulls\/(\d+)(?:\/(files|reviews))?$/);
       if (pullRoute) {
@@ -210,18 +275,27 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
         return json(pull);
       }
       if (path === "/pulls") {
-        const state = url.searchParams.get("state") ?? "open";
-        const unique = Array.from(new Map(pulls.map((pull) => [pull.number, pull])).values());
-        return json(unique.filter((pull) => state === "all" || pull.state === state));
+        const filter = url.searchParams.get("state") ?? "open";
+        const source = filter === "closed" && w.backlog !== undefined ? w.backlog : pulls;
+        const unique = Array.from(new Map(source.map((pull) => [pull.number, pull])).values());
+        return json(unique.filter((pull) => filter === "all" || pull.state === filter));
       }
       if (path === "/git/ref/heads/main") return json({ ref: "refs/heads/main", object: { type: "commit", sha: w.mainSha } });
       if (path === `/git/ref/heads/${BRANCH}`) return branchSha
         ? json({ ref: `refs/heads/${BRANCH}`, object: { type: "commit", sha: branchSha } }) : json({}, 404);
+      const commitRoute = path.match(/^\/(git\/)?commits\/([0-9a-f]{40})$/);
+      if (commitRoute && state?.commits[commitRoute[2]]) {
+        const commit = state.commits[commitRoute[2]];
+        if (commitRoute[1]) return json(commit);
+        const author = { login: commit.author.name, type: commit.author.name === "github-actions[bot]" ? "Bot" : "User" };
+        return json({ sha: commit.sha, commit, author, committer: author });
+      }
       if (path === `/git/commits/${SHA}` || path === `/git/commits/${w.mainSha}`) return json({ sha: path.split("/").at(-1), tree: { sha: TREE_SHA } });
       if (path.startsWith("/contents/")) {
         const name = path.slice("/contents/".length);
         const ref = url.searchParams.get("ref");
-        const files = ref === UPDATED_SHA || ref === BRANCH ? candidate : w.files;
+        const proposalRef = ref === UPDATED_SHA || ref === BRANCH || state && ref === state.branchSha;
+        const files = (ref ? w.filesBySha?.[ref] : undefined) ?? (proposalRef ? candidate : w.files);
         const content = files[name];
         return content === undefined ? json({}, 404) : json({ type: "file", encoding: "base64", sha: TREE_SHA, content: Buffer.from(content).toString("base64") });
       }
@@ -238,10 +312,17 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
         message: `calver-plan-v1\n${JSON.stringify({ ...w.existingPlan, publicationEvidence: null })}`,
         object: { type: "commit", sha: w.existingTagSha ?? SHA },
       });
-      if (path === "/actions/workflows/ci.yml/runs") return json({ total_count: 1, workflow_runs: [{
-        id: 8, event: "push", status: "completed", conclusion: "success", head_sha: SHA,
-        head_branch: "main", head_repository: repo(), path: ".github/workflows/ci.yml",
-      }] });
+      const runs = w.ciRuns ?? [ciRun(SHA, w.ciEvent ?? "push")];
+      if (path === "/actions/workflows/ci.yml/runs") {
+        const requestedSha = url.searchParams.get("head_sha");
+        const matching = requestedSha ? runs.filter((run) => run.head_sha === requestedSha) : runs;
+        return json({ total_count: matching.length, workflow_runs: matching });
+      }
+      const runRoute = path.match(/^\/actions\/runs\/(\d+)$/);
+      if (runRoute) {
+        const run = runs.find((entry) => entry.id === Number(runRoute[1]));
+        return run ? json(run) : json({}, 404);
+      }
     }
     if (method === "POST" && path === "/git/blobs") {
       const content = body.encoding === "base64" ? Buffer.from(String(body.content), "base64").toString("utf8") : String(body.content);
@@ -260,15 +341,21 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
     }
     if (method === "POST" && path === "/git/commits") {
       if (body.tree !== updatedTree) throw new Error("version commit did not bind the updated tree");
-      return json({ sha: UPDATED_SHA, tree: { sha: updatedTree } }, 201);
+      const bot = { name: "github-actions[bot]", email: "41898282+github-actions[bot]@users.noreply.github.com" };
+      const commit: ProposalCommit = {
+        sha: UPDATED_SHA, message: String(body.message), tree: { sha: updatedTree },
+        parents: (body.parents as string[]).map((sha) => ({ sha })), author: bot, committer: bot,
+      };
+      if (state) state.commits[UPDATED_SHA] = commit;
+      return json(commit, 201);
     }
     if (method === "POST" && path === "/git/refs" && body.ref === `refs/heads/${BRANCH}`) {
-      branchSha = String(body.sha);
+      updateBranch(String(body.sha));
       effects.push("version-commit");
       return json({ ref: body.ref, object: { type: "commit", sha: branchSha } }, 201);
     }
     if (method === "PATCH" && path === `/git/refs/heads/${BRANCH}`) {
-      branchSha = String(body.sha);
+      updateBranch(String(body.sha));
       effects.push("version-commit");
       return json({ ref: `refs/heads/${BRANCH}`, object: { type: "commit", sha: branchSha } });
     }
@@ -276,15 +363,18 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
       openPull = { ...selectedPull(), number: w.pull ? 43 : 42, state: "open", merged: false, merged_at: "", draft: body.draft === true,
         head: { ref: BRANCH, sha: branchSha ?? UPDATED_SHA, repo: repo() },
         title: String(body.title), body: String(body.body ?? ""), labels: [] };
+      persist();
       return json(openPull, 201);
     }
     if (method === "PATCH" && path === `/pulls/${openPull?.number}` && openPull) {
       openPull = { ...openPull, ...body } as Pull;
+      persist();
       return json(openPull);
     }
     if (method === "POST" && path === `/issues/${openPull?.number}/labels`) {
-      const labels = body.labels as string[];
+      const labels = w.returnedLabels ?? body.labels as string[];
       if (openPull) openPull.labels = labels.map((name) => ({ name }));
+      persist();
       return json(labels.map((name) => ({ name })));
     }
     if (method === "POST" && path === "/actions/workflows/ci.yml/dispatches") {
@@ -312,7 +402,7 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
     releaser: {
       plan: async (input) => {
         planInputs.push(structuredClone(input));
-        const answer = w.plans[Math.min(planned.length, w.plans.length - 1)];
+        const answer = w.planBySha?.[input.sha] ?? w.plans[Math.min(planned.length, w.plans.length - 1)];
         const plan: Plan = {
           schema: "calver-plan-v1", repository: REPO, channel: "stable", namespace: "", latest: "auto",
           sha: input.sha, operation: input.operation, policy: "direct-release", date: "2026-10-30",
@@ -468,6 +558,180 @@ describe("generated version PR required checks", () => {
     expect(h.dispatches(workflow)).toHaveLength(1);
     expectNoPublication(h);
     expect(h.calls.some((call) => call.method !== "GET" && /\/statuses\/|\/check-runs/.test(call.path))).toBe(false);
+  });
+});
+
+// Concurrency serializes active jobs but coalesces pending callbacks. The live
+// backlog selector is GET /pulls?state=closed&base=main (follow normal paging),
+// not a process-local queue. Each selected PR is independently verified through
+// its PR/commit/CI/package evidence before shared publication of THAT merge SHA.
+describe("coalesced callbacks reconcile the unpublished selected-release backlog", () => {
+  const laterSha = "7".repeat(40);
+  const backlogWorld = (backlog: Pull[]) => world({
+    pull: null, backlog, mainSha: laterSha, files: manifests(),
+    filesBySha: { [SHA]: manifests() },
+    associatedBySha: { [SHA]: backlog, [laterSha]: [] },
+    ciRuns: [ciRun(SHA, "push", 8), ciRun(laterSha, "push", 9)],
+  });
+  const callbackForLaterMerge = (w: World) => harness(w, {
+    GITHUB_EVENT_NAME: "workflow_run", GITHUB_SHA: laterSha,
+  }, completion("push", { id: 9, head_sha: laterSha }));
+
+  it("reconciles selected merge A after its pending callback was replaced by ordinary merge B", async () => {
+    const h = callbackForLaterMerge(backlogWorld([selectedPull()]));
+    await h.run();
+    expect(h.published.map(({ plan }) => plan.sha)).toEqual([SHA]);
+    expect(h.published[0].plan.version).toBe(VERSION);
+    expect(h.dispatches("deploy.yml")).toHaveLength(1);
+    expect(h.dispatches("deploy.yml")[0].body).toEqual({ ref: "main", inputs: { tag: TAG } });
+    expect(h.calls.some((call) => call.method === "GET" && call.path === "/pulls" && call.query.get("state") === "closed")).toBe(true);
+    expect(h.calls.some((call) => call.path === "/contents/package.json" && call.query.get("ref") === SHA)).toBe(true);
+    expect(h.calls.some((call) => call.method === "GET" && call.path === "/pulls/42")).toBe(true);
+    expect(h.calls.some((call) => call.path === "/actions/workflows/ci.yml/runs" && call.query.get("head_sha") === SHA)).toBe(true);
+  });
+
+  it("does not republish an already-published release while reconciling a later callback", async () => {
+    const first = harness();
+    await first.run();
+    const original = first.planned[0];
+    const w = backlogWorld([selectedPull()]);
+    w.existingPlan = original;
+    w.planBySha = { [SHA]: original };
+    w.plans = [{ version: "2026.1030.1", tag: "v2026.1030.1" }];
+    const h = callbackForLaterMerge(w);
+    await h.run();
+    expectNoPublication(h);
+  });
+
+  it("does not publish extra releases when the selected-release backlog is empty", async () => {
+    const h = callbackForLaterMerge(backlogWorld([]));
+    await h.run();
+    expectNoPublication(h);
+  });
+});
+
+// Only fake GitHub state survives the two invocations. Provenance is the actual
+// generated commit message/tree/parents captured from the first HTTP write, not
+// an in-memory authorization token supplied to runCalver. Recovery must re-read
+// the live branch plus its generated commit or owned open-PR evidence. A caller
+// may strengthen the durable marker; these tests do not invent its text.
+describe("partial proposal creation resumes from independently verified provenance", () => {
+  it.each(["/pulls", "/issues/42/labels"])("retries after POST %s failed once, without refusing its own partial proposal", async (path) => {
+    const state = proposalState();
+    const w = world({ pull: null, proposal: state, files: manifests("1.0.1"), status: { [`POST ${path}`]: 503 } });
+    const first = harness(w);
+    await expect(first.run()).rejects.toThrow(/HTTP 503/);
+    expect(state.branchSha).toBe(UPDATED_SHA);
+    expect(state.commits[UPDATED_SHA]).toMatchObject({ sha: UPDATED_SHA, parents: [{ sha: SHA }] });
+    expect(state.commits[UPDATED_SHA].message).toMatch(/\S/);
+    if (path === "/pulls") expect(state.pull).toBeNull();
+    else expect(state.pull).toMatchObject({ number: 42, labels: [], head: { sha: UPDATED_SHA } });
+    expectNoPublication(first);
+
+    delete w.status[`POST ${path}`];
+    const retry = harness(w, { GITHUB_RUN_ID: "101", GITHUB_RUN_ATTEMPT: "2" });
+    expect(await retry.run()).toMatchObject({ status: "version-pr", number: 42, headSha: UPDATED_SHA });
+    expect(state.pull).toMatchObject({ number: 42, labels: [{ name: LABEL }], head: { sha: UPDATED_SHA } });
+    expect(retry.calls.some((call) => call.method === "GET" && call.path === `/git/ref/heads/${BRANCH}`)).toBe(true);
+    const commitVerified = retry.calls.some((call) => call.method === "GET" &&
+      [ `/git/commits/${UPDATED_SHA}`, `/commits/${UPDATED_SHA}` ].includes(call.path));
+    const prVerified = retry.calls.some((call) => call.method === "GET" && call.path === "/pulls/42");
+    expect(path === "/pulls" ? commitVerified : commitVerified || prVerified, "live provenance must be verified on retry").toBe(true);
+    expect(retry.calls.filter((call) => call.method === "POST" && call.path === "/pulls")).toHaveLength(path === "/pulls" ? 1 : 0);
+    for (const workflow of ["ci.yml", "pr-lint.yml", "secret-scan.yml"]) {
+      expect(retry.dispatches(workflow)).toHaveLength(1);
+      expect(retry.dispatches(workflow)[0]).toMatchObject({ body: { ref: BRANCH }, branchSha: UPDATED_SHA });
+    }
+    expectNoPublication(retry);
+  });
+
+  it("refuses a genuinely unknown branch even when its manifests look like a version proposal", async () => {
+    const state = proposalState();
+    state.branchSha = OTHER_SHA;
+    state.files = manifests();
+    const human = { name: "contributor", email: "contributor@example.test" };
+    state.commits[OTHER_SHA] = {
+      sha: OTHER_SHA, message: "chore: edit package metadata", tree: { sha: TREE_SHA },
+      parents: [{ sha: SHA }], author: human, committer: human,
+    };
+    const h = harness(world({ pull: null, proposal: state, files: manifests("1.0.1") }));
+    await expect(h.run()).rejects.toThrow(/owner|provenance|generated|branch/i);
+    expect(state.branchSha).toBe(OTHER_SHA);
+    expect(h.calls.some((call) => call.method !== "GET" && (call.path.includes("/refs/") || call.path === "/pulls" || call.path.endsWith("/dispatches")))).toBe(false);
+    expectNoPublication(h);
+  });
+
+  it("refuses a branch changed by another writer after partial creation", async () => {
+    const state = proposalState();
+    const w = world({ pull: null, proposal: state, files: manifests("1.0.1"), status: { "POST /pulls": 503 } });
+    await expect(harness(w).run()).rejects.toThrow(/HTTP 503/);
+    const human = { name: "contributor", email: "contributor@example.test" };
+    state.branchSha = OTHER_SHA;
+    state.commits[OTHER_SHA] = {
+      ...state.commits[UPDATED_SHA], sha: OTHER_SHA, message: "fix: replace the proposal branch",
+      author: human, committer: human,
+    };
+    delete w.status["POST /pulls"];
+    const retry = harness(w);
+    await expect(retry.run()).rejects.toThrow(/owner|provenance|generated|branch/i);
+    expect(state.branchSha).toBe(OTHER_SHA);
+    expect(retry.calls.some((call) => call.method !== "GET" && (call.path.includes("/refs/") || call.path === "/pulls" || call.path.endsWith("/dispatches")))).toBe(false);
+    expectNoPublication(retry);
+  });
+
+  it("checks that the labels returned by GitHub actually contain the proposal marker", async () => {
+    const state = proposalState();
+    const h = harness(world({ pull: null, proposal: state, files: manifests("1.0.1"), returnedLabels: ["unrelated-label"] }));
+    await expect(h.run()).rejects.toThrow(/label|marker/i);
+    expect(state.pull?.labels).toEqual([{ name: "unrelated-label" }]);
+    for (const workflow of ["ci.yml", "pr-lint.yml", "secret-scan.yml"]) expect(h.dispatches(workflow)).toEqual([]);
+    expectNoPublication(h);
+  });
+
+  it("never publishes an unlabeled merged intermediate PR, including during backlog reconciliation", async () => {
+    const unlabeled = { ...selectedPull(), head: { ...selectedPull().head, sha: UPDATED_SHA }, labels: [] };
+    const h = harness(world({ pull: unlabeled, backlog: [unlabeled] }));
+    expect((await h.run()).status).not.toBe("published");
+    expectNoPublication(h);
+  });
+});
+
+describe("full-CI writer callbacks share the deploy evaluator's eligible event origins", () => {
+  it.each(["push", "workflow_dispatch", "schedule"])("resumes selected publication after successful exact-SHA main CI from %s", async (event) => {
+    const trustedMainSha = "7".repeat(40);
+    const h = harness(world({ ciEvent: event, mainSha: trustedMainSha }), {
+      GITHUB_EVENT_NAME: "workflow_run", GITHUB_SHA: trustedMainSha,
+    }, completion(event));
+    expect(await h.run()).toMatchObject({ status: "published", sha: SHA, tag: TAG });
+    expect(h.published.map(({ plan }) => plan.sha)).toEqual([SHA]);
+    expect(h.dispatches("deploy.yml")).toHaveLength(1);
+    // The successful CI callback itself resumes; no extra manual writer run.
+    expect(h.calls.some((call) => call.method === "POST" && call.path === "/actions/workflows/release-please.yml/dispatches")).toBe(false);
+  });
+
+  it.each([
+    ["PR-origin CI", { event: "pull_request" }],
+    ["another workflow path", { path: ".github/workflows/other.yml" }],
+    ["another workflow name", { name: "Other" }],
+    ["another repository", { head_repository: { ...repo(), full_name: "outsider/kagi-shinobi" } }],
+    ["a feature branch", { head_branch: "feature" }],
+    ["unfinished status", { status: "in_progress" }],
+    ["failed conclusion", { conclusion: "failure" }],
+    ["a malformed exact SHA", { head_sha: "abc123" }],
+  ] as const)("does not turn %s into an eligible writer callback", async (_name, change) => {
+    const h = harness(world({ backlog: [] }), { GITHUB_EVENT_NAME: "workflow_run" }, completion("workflow_dispatch", change));
+    expect((await h.run()).status).not.toBe("published");
+    expect(h.calls).toEqual([]);
+    expectNoPublication(h);
+  });
+
+  it("does not use green CI on another exact SHA to publish the selected PR", async () => {
+    const h = harness(world({
+      pull: null, backlog: [], mainSha: OTHER_SHA, files: manifests("1.0.1"),
+      associatedBySha: { [OTHER_SHA]: [selectedPull()] },
+    }), { GITHUB_EVENT_NAME: "workflow_run", GITHUB_SHA: OTHER_SHA }, completion("workflow_dispatch", { head_sha: OTHER_SHA }));
+    expect((await h.run()).status).not.toBe("published");
+    expectNoPublication(h);
   });
 });
 

@@ -3,6 +3,7 @@
 // Use the existing no-YAML-dependency convention from deploy-gate.test.ts.
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
 const TOOLING_SHA = "1508f2c10cb83bc0677e8e559ff796a55c66e737";
@@ -49,6 +50,48 @@ describe("CalVer workflow safety wiring", () => {
     const sharedAction = text.match(/uses:\s*TogetherWeOwn\/\.github\/[^\s@]+@([0-9a-f]{40})\s*$/m);
     if (sharedCheckout) expect(sharedCheckout).toMatch(new RegExp(`ref:\\s*["']?${TOOLING_SHA}["']?\\s*$`, "m"));
     else expect(sharedAction?.[1], "separate pinned shared-tooling checkout or action").toBe(TOOLING_SHA);
+  });
+
+  it("lets successful main CI callbacks from every full-suite origin reach the writer", () => {
+    const text = calverWorkflow();
+    expect(text).toMatch(/workflow_run:\s*\n\s+workflows:\s*\[CI\]\s*\n\s+types:\s*\[completed\]/);
+    expect(read("ci.yml")).toMatch(/^name:\s*CI\s*$/m);
+    const writer = jobs(text).find((job) => /\bnode\s+ci\/calver\.ts\b/.test(job))!;
+    const raw = writer.match(/^ {4}if:([\s\S]*?)(?=^ {4}[a-z_-]+:)/m)?.[1] ?? "";
+    const expression = raw.trim().replace(/^[>|][-+]?\s*\n/, "").trim()
+      .replace(/^\$\{\{\s*/, "").replace(/\s*\}\}$/, "");
+    expect(expression).not.toBe("");
+    // Evaluate the existing boolean/JSON-membership expression subset, rather
+    // than accepting names that are present in an unsafe OR or push-only AND.
+    // Context is serialized data; no host functions, modules or I/O are exposed.
+    const allows = (origin: string, change: Record<string, unknown> = {}, eventName = "workflow_run") => {
+      const github = {
+        repository: "TogetherWeOwn/kagi-shinobi", event_name: eventName,
+        event: eventName === "workflow_run" ? { workflow_run: {
+          event: origin, name: "CI", path: ".github/workflows/ci.yml", status: "completed",
+          head_sha: "a".repeat(40), head_branch: "main", conclusion: "success",
+          head_repository: { full_name: "TogetherWeOwn/kagi-shinobi" }, ...change,
+        } } : {},
+      };
+      const program = `
+        const github = ${JSON.stringify(github)};
+        const fromJSON = JSON.parse;
+        const contains = (list, value) => Array.isArray(list) ? list.includes(value) : String(list).includes(String(value));
+        Boolean(${expression});
+      `;
+      return runInNewContext(program, Object.create(null), {
+        timeout: 100, contextCodeGeneration: { strings: false, wasm: false },
+      }) as boolean;
+    };
+    for (const origin of ["push", "workflow_dispatch", "schedule"]) {
+      expect(allows(origin), `${origin}: successful exact-repository main callback`).toBe(true);
+      for (const broken of [
+        { head_branch: "feature" }, { conclusion: "failure" },
+        { head_repository: { full_name: "outsider/kagi-shinobi" } },
+      ]) expect(allows(origin, broken), `${origin}: restrictions are conjunctive`).toBe(false);
+    }
+    for (const origin of ["pull_request", "workflow_call"]) expect(allows(origin)).toBe(false);
+    for (const event of ["push", "workflow_dispatch"]) expect(allows("", {}, event)).toBe(true);
   });
 
   it("serializes the writer without cancelling an in-flight release", () => {
