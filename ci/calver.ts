@@ -2,9 +2,10 @@
 // arithmetic and publication; this adapter never writes tags or Releases.
 // Import-safe for offline tests. The CLI executes only trusted main code.
 import { appendFileSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
-import { evaluateCi } from "./deploy-gate.ts";
+import { evaluateCi, type CiVerdict } from "./deploy-gate.ts";
 
 export type Env = Record<string, string | undefined>;
 export interface PlanInput {
@@ -55,6 +56,11 @@ export interface Result {
   headSha?: string;
   releaseUrl?: string;
   deploymentDispatched?: boolean;
+  checkAdmission?: {
+    state: "awaiting_pr_event" | "approval_required" | "admitted";
+    headSha: string;
+    runIds: number[];
+  };
 }
 interface Repository { full_name: string }
 interface Pull {
@@ -138,7 +144,28 @@ function github(token: string, fetchImpl: typeof fetch) {
     }
     throw new Error("GitHub list exceeded complete pagination bound");
   }
-  return { request, get, list };
+  // Native GraphQL is the only documented way to make a ref update conditional
+  // on its expected prior OID. A REST PATCH has no such predicate: its force
+  // flag silently discards whatever another writer pushed in between.
+  // https://docs.github.com/en/graphql/reference/input-objects#refupdate
+  async function graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    const response = await fetchImpl("https://api.github.com/graphql", {
+      method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000),
+      headers: {
+        Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+    requireValue(response.ok, `GitHub GraphQL HTTP ${response.status}`);
+    // GraphQL reports a refused mutation as HTTP 200 plus an errors array, so a
+    // missing data payload is a refusal, never a silent success.
+    const payload = await response.json() as { data?: T; errors?: Array<{ message?: string }> };
+    requireValue(!Array.isArray(payload.errors) || payload.errors.length === 0, "GitHub GraphQL rejected the mutation");
+    requireValue(payload.data !== null && typeof payload.data === "object", "empty GitHub GraphQL response");
+    return payload.data;
+  }
+  return { request, get, list, graphql };
 }
 
 type Api = ReturnType<typeof github>;
@@ -157,26 +184,96 @@ async function filesAt(api: Api, sha: string): Promise<Files> {
   return { pkg, lock, notes: await text("CHANGELOG.md") };
 }
 
-async function requireCi(api: Api, sha: string): Promise<boolean> {
+async function readCi(api: Api, sha: string): Promise<CiVerdict> {
   const list = await api.get<{ total_count: number; workflow_runs: CiRun[] }>(`/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=100`);
   requireValue(Array.isArray(list.workflow_runs) && Number.isSafeInteger(list.total_count) && list.total_count === list.workflow_runs.length, "incomplete exact-SHA CI evidence");
-  const verdict = evaluateCi(list.workflow_runs, sha, REPOSITORY);
-  if (verdict.state === "failed") throw new Error(verdict.detail);
-  return verdict.state === "success";
+  return evaluateCi(list.workflow_runs, sha, REPOSITORY);
 }
 
-async function exactPublishedReplay(api: Api, plan: Plan): Promise<boolean> {
-  const release = await api.request<{ tag_name: string; draft: boolean; prerelease: boolean; body: string }>("GET", `/releases/tags/${plan.tag}`, undefined, true);
-  if (!release) return false;
-  requireValue(release.tag_name === plan.tag && release.draft === false && release.prerelease === false && release.body?.includes(`<!-- calver-plan:${plan.id} -->`), "release provenance mismatch");
-  const ref = await api.get<Ref>(`/git/ref/tags/${plan.tag}`);
+function checkPlanIdentity(plan: Plan, sha: string): void {
+  requireValue(plan.schema === "calver-plan-v1" && plan.repository === REPOSITORY && plan.sha === sha &&
+    plan.operation === `kagi/release/${sha}` && plan.policy === "direct-release" && plan.channel === "stable" &&
+    plan.namespace === "" && plan.latest === "auto" && plan.source === null && plan.sourceCanary === null &&
+    plan.evidence === null && plan.repairDate === null && plan.tag === `v${plan.version}` &&
+    /^\d{4}\.\d{3,4}\.\d+$/.test(plan.version), "shared plan identity/provenance mismatch");
+}
+
+// Verify the frozen contract's canonical integrity digest, not version arithmetic.
+// Settlement uses direct tag/Release reads rather than N shared registry scans.
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value !== null && typeof value === "object") return `{${Object.keys(value).sort()
+    .map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+
+// Settlement asks one question: is THIS exact operation already published at
+// this SHA? A tag whose frozen record is coherent but names a different SHA is
+// not evidence about this one — another release legitimately owns the slot, so
+// the shared planner must allocate afresh rather than be told this SHA settled.
+// A tag whose own record is internally inconsistent, or that claims this SHA
+// under a different operation, is unprovenanced and refuses.
+async function settledRelease(api: Api, sha: string, version: string): Promise<Result | undefined> {
+  const name = `v${version}`;
+  const path = encodeURIComponent(name);
+  const ref = await api.request<Ref>("GET", `/git/ref/tags/${path}`, undefined, true);
+  if (!ref) {
+    // A Release without its annotated tag proves nothing about its source SHA.
+    const orphan = await api.request("GET", `/releases/tags/${path}`, undefined, true);
+    requireValue(!orphan, "release lacks operation provenance");
+    return undefined;
+  }
   requireValue(ref.object?.type === "tag" && SHA.test(ref.object.sha), "release lacks operation provenance");
   const tag = await api.get<Ref & { message: string }>(`/git/tags/${ref.object.sha}`);
-  requireValue(tag.object?.type === "commit" && tag.object.sha === plan.sha && tag.message?.startsWith("calver-plan-v1\n"), "release SHA/provenance mismatch");
-  const prior = object(JSON.parse(tag.message.slice("calver-plan-v1\n".length)));
-  requireValue(prior.id === plan.id && prior.operation === plan.operation && prior.sha === plan.sha && prior.version === plan.version, "release operation provenance mismatch");
-  // The shared publisher still independently verifies the complete annotation.
-  return true;
+  requireValue(tag.message?.startsWith("calver-plan-v1\n") && tag.object?.type === "commit" && SHA.test(tag.object.sha), "release SHA/provenance mismatch");
+  const { publicationEvidence, ...record } = object(JSON.parse(tag.message.slice("calver-plan-v1\n".length)));
+  const { id, ...payload } = record;
+  requireValue(id === createHash("sha256").update(canonical(payload)).digest("hex"), "release plan integrity mismatch");
+  const plan = record as unknown as Plan;
+  requireValue(plan.schema === "calver-plan-v1" && plan.repository === REPOSITORY && plan.version === version &&
+    plan.tag === name && /^\d{4}\.\d{3,4}\.\d+$/.test(plan.version) &&
+    (publicationEvidence === null || publicationEvidence === undefined), "release version binding/provenance mismatch");
+  requireValue(tag.object.sha === plan.sha, "release target/annotation SHA mismatch");
+  if (plan.sha !== sha) return undefined;
+  requireValue(plan.operation === `kagi/release/${sha}` && plan.policy === "direct-release" && plan.channel === "stable" &&
+    plan.namespace === "" && plan.latest === "auto" && plan.source === null && plan.sourceCanary === null &&
+    plan.evidence === null && plan.repairDate === null, "release operation provenance mismatch");
+  const release = await api.request<{ tag_name: string; draft: boolean; prerelease: boolean; body: string; html_url: string }>("GET", `/releases/tags/${path}`, undefined, true);
+  requireValue(release, "tag exists without Release: explicit repair required");
+  requireValue(release.tag_name === name && release.draft === false && release.prerelease === false &&
+    release.body?.includes(`<!-- calver-plan:${plan.id} -->`) &&
+    release.html_url === `https://github.com/${REPOSITORY}/releases/tag/${name}`, "release provenance mismatch");
+  return { status: "published", version, tag: name, sha, releaseUrl: release.html_url, deploymentDispatched: false };
+}
+
+interface PrRun extends CiRun {
+  repository: Repository;
+  path: string;
+  head_branch: string;
+  pull_requests: Array<{ number: number; head: { sha: string; ref: string }; base: { ref: string } }>;
+}
+
+async function checkAdmission(api: Api, number: number, sha: string): Promise<NonNullable<Result["checkAdmission"]>> {
+  const paths = ["ci.yml", "pr-lint.yml", "secret-scan.yml"].map((name) => `.github/workflows/${name}`);
+  const runs = async (filter = ""): Promise<PrRun[]> => {
+    const result = await api.get<{ total_count: number; workflow_runs: PrRun[] }>(`/actions/runs?event=pull_request&head_sha=${sha}&per_page=100${filter}`);
+    requireValue(Array.isArray(result.workflow_runs) && Number.isSafeInteger(result.total_count) &&
+      result.total_count === result.workflow_runs.length, "incomplete native PR admission evidence");
+    return result.workflow_runs.filter((run) => Number.isSafeInteger(run.id) && run.id > 0 && run.event === "pull_request" &&
+      run.repository?.full_name === REPOSITORY && run.head_repository?.full_name === REPOSITORY &&
+      run.head_sha === sha && run.head_branch === BRANCH && paths.includes(run.path) &&
+      run.pull_requests?.some((pull) => pull.number === number && pull.head?.sha === sha && pull.head.ref === BRANCH && pull.base?.ref === "main"));
+  };
+  const latest = new Map<string, PrRun>();
+  for (const run of await runs()) if (run.id > (latest.get(run.path)?.id ?? 0)) latest.set(run.path, run);
+  // Membership in this documented filter, not a guessed raw status/conclusion
+  // field, establishes pending native approval. The writer cannot self-approve.
+  const pending = await runs("&status=action_required");
+  const runIds = [...latest.values()].map((run) => run.id);
+  const approval = pending.some((run) => latest.get(run.path)?.id === run.id);
+  const admitted = latest.size === paths.length && [...latest.values()].every((run) =>
+    ["queued", "in_progress", "completed"].includes(run.status));
+  return { state: approval ? "approval_required" : admitted ? "admitted" : "awaiting_pr_event", headSha: sha, runIds };
 }
 
 const PROPOSAL_MARKER = "\n\ncalver-proposal-v1\n";
@@ -211,11 +308,10 @@ async function versionPr(api: Api, deps: Deps, sha: string, plan: Plan, source: 
   if (branch) {
     // A closed, merged version PR may leave its disposable generated ref behind.
     requireValue(branch.object?.type === "commit" && SHA.test(branch.object.sha), "invalid version branch");
-    const owners = open ? [open] : await api.list<Pull>(`/pulls?state=closed&head=TogetherWeOwn:${BRANCH}`);
-    if (!owners.some((p) => selected(p, REPOSITORY) && p.head.sha === branch.object.sha)) {
-      if (open) requireValue(open.head.sha === branch.object.sha, "version branch changed head");
-      await requireGeneratedProposal(api, branch.object.sha);
-    }
+    if (open) requireValue(open.head.sha === branch.object.sha, "version branch changed head");
+    // PR authorship and labels survive contributor pushes. Only the live commit
+    // proves that this head belongs to the generator and can be replaced.
+    await requireGeneratedProposal(api, branch.object.sha);
   }
   const notes = await deps.releaser.notes(plan);
   const contents: Record<string, string> = {
@@ -236,9 +332,19 @@ async function versionPr(api: Api, deps: Deps, sha: string, plan: Plan, source: 
   // Only the generated branch is replaceable. Tags/default branch are never
   // moved. Old version commits remain reachable through their PR history.
   if (branch) {
-    const current = await api.get<Ref>(`/git/ref/heads/${BRANCH}`);
-    requireValue(current.object.sha === branch.object.sha, "version branch changed during refresh");
-    await api.request("PATCH", `/git/refs/heads/${BRANCH}`, { sha: updated.sha, force: true });
+    // The replacement is based on current main, so it is deliberately not a
+    // fast-forward — but it must still be conditional on the verified G. A
+    // final GET then a force PATCH would silently discard a contributor push
+    // that lands between the two; only the native expected-before OID is atomic.
+    const repository = await api.get<{ node_id: string }>("");
+    requireValue(typeof repository.node_id === "string" && /^[A-Za-z0-9_+/=-]{4,200}$/.test(repository.node_id), "invalid repository node id");
+    await api.graphql<{ updateRefs: { clientMutationId: string | null } | null }>(
+      "mutation GuardedReplacement($input: UpdateRefsInput!) { updateRefs(input: $input) { clientMutationId } }",
+      { input: {
+        repositoryId: repository.node_id,
+        refUpdates: [{ name: `refs/heads/${BRANCH}`, beforeOid: branch.object.sha, afterOid: updated.sha, force: true }],
+      } },
+    );
   } else {
     await api.request("POST", "/git/refs", { ref: `refs/heads/${BRANCH}`, sha: updated.sha });
   }
@@ -262,8 +368,9 @@ async function versionPr(api: Api, deps: Deps, sha: string, plan: Plan, source: 
     ref: BRANCH, inputs: { pr_number: String(pull.number), head_sha: updated.sha },
   });
   await api.request("POST", "/actions/workflows/secret-scan.yml/dispatches", { ref: BRANCH });
-  deps.log(`version PR #${pull.number}: ${plan.version}; full CI and required checks dispatched on ${updated.sha}`);
-  return { status: "version-pr", number: pull.number, version: plan.version, headSha: updated.sha };
+  const admission = await checkAdmission(api, pull.number, updated.sha);
+  deps.log(`version PR #${pull.number}: ${plan.version}; full CI dispatched on ${updated.sha}; native PR checks ${admission.state} (not a pass or merge authorization)`);
+  return { status: "version-pr", number: pull.number, version: plan.version, headSha: updated.sha, checkAdmission: admission };
 }
 
 export async function runCalver(env: Env, deps: Deps): Promise<Result> {
@@ -298,11 +405,13 @@ export async function runCalver(env: Env, deps: Deps): Promise<Result> {
     const result = await releaseCommit(api, deps, pull.merge_commit_sha!, pull.number);
     if (result.status === "published") reconciled = result;
   }
-  // Do not replace a just-recovered release with an unrelated new proposal.
-  return reconciled ?? await releaseCommit(api, deps, sha);
+  // Always evaluate a selected current merge, even after recovering a release.
+  // Only suppress an unrelated ordinary merge's proposal in that case.
+  const current = await releaseCommit(api, deps, sha, undefined, reconciled === undefined);
+  return current.status === "ignored" ? reconciled ?? current : current;
 }
 
-async function releaseCommit(api: Api, deps: Deps, sha: string, backlogNumber?: number): Promise<Result> {
+async function releaseCommit(api: Api, deps: Deps, sha: string, backlogNumber?: number, proposeUnselected = true): Promise<Result> {
   const associated = await api.list<Pull>(`/commits/${sha}/pulls`);
   const eligible: Pull[] = [];
   for (const summary of associated) {
@@ -313,35 +422,41 @@ async function releaseCommit(api: Api, deps: Deps, sha: string, backlogNumber?: 
   requireValue(eligible.length <= 1, "ambiguous release selection: multiple merged version PRs");
   const pull = eligible[0];
   if (backlogNumber !== undefined && pull?.number !== backlogNumber) return { status: "ignored" };
+  if (!pull && !proposeUnselected) return { status: "ignored" };
   if (pull) {
     const changed = await api.list<{ filename: string; status: string; previous_filename?: string }>(`/pulls/${pull.number}/files`);
     requireValue(changed.length === PATHS.length && PATHS.every((path) => changed.some((f) => f.filename === path && f.status === "modified" && !f.previous_filename)), "version PR file scope is not exactly manifests and notes");
   }
-  if (!await requireCi(api, sha)) {
+  const source = await filesAt(api, sha);
+  if (pull) {
+    requireValue(source.notes.includes(`## ${source.pkg.version}\n`), "selected version lacks matching CHANGELOG notes");
+    const settled = await settledRelease(api, sha, source.pkg.version);
+    if (settled) {
+      deps.log(`selected release #${pull.number} already published at ${sha}; no publication or deploy replay`);
+      return backlogNumber === undefined ? settled : { status: "ignored" };
+    }
+  }
+  const ci = await readCi(api, sha);
+  if (ci.state === "failed") {
+    // A failed historical selection stays unauthorized, but cannot poison every
+    // later callback. Provider errors and incomplete evidence still throw above.
+    if (backlogNumber === undefined) throw new Error(ci.detail);
+    deps.log(`skipping selected release #${backlogNumber}: ${ci.detail}`);
+    return { status: "ignored" };
+  }
+  if (ci.state === "pending") {
     deps.log(`waiting for exact-SHA full CI on ${sha}; CI completion will resume the release writer`);
     return { status: "ignored" };
   }
-  const source = await filesAt(api, sha);
-  if (pull) requireValue(source.notes.includes(`## ${source.pkg.version}\n`), "selected version lacks matching CHANGELOG notes");
   const input: PlanInput = { channel: "stable", sha, policy: "direct-release", operation: `kagi/release/${sha}` };
   let plan = await deps.releaser.plan(input);
-  const checkPlan = (p: Plan): void => {
-    requireValue(p.schema === "calver-plan-v1" && p.repository === REPOSITORY && p.sha === sha && p.operation === input.operation && p.policy === "direct-release" && p.channel === "stable" && p.namespace === "" && p.tag === `v${p.version}` && /^\d{4}\.\d{3,4}\.\d+$/.test(p.version), "shared plan identity mismatch");
-  };
-  checkPlan(plan);
-  if (backlogNumber !== undefined && plan.version === source.pkg.version && await exactPublishedReplay(api, plan)) {
-    deps.log(`selected release #${backlogNumber} already published at ${sha}; no publication or deploy replay`);
-    return { status: "ignored" };
-  }
+  checkPlanIdentity(plan, sha);
   if (plan.date !== deps.now().toISOString().slice(0, 10)) {
-    // A past plan is valid only for an exact already-published retry. A fresh
-    // version PR that crossed midnight must get a fresh date, not a backdate.
-    const replay = pull && plan.version === source.pkg.version && await exactPublishedReplay(api, plan);
-    if (!replay) {
-      plan = await deps.releaser.plan(input);
-      checkPlan(plan);
-      requireValue(plan.date === deps.now().toISOString().slice(0, 10), "UTC date changed repeatedly; retry before stamping");
-    }
+    // Published retries were settled above. A fresh proposal crossing midnight
+    // must get a fresh shared plan, never a backdated publication.
+    plan = await deps.releaser.plan(input);
+    checkPlanIdentity(plan, sha);
+    requireValue(plan.date === deps.now().toISOString().slice(0, 10), "UTC date changed repeatedly; retry before stamping");
   }
   if (!pull || source.pkg.version !== plan.version) {
     // A stale historical selection cannot seed a proposal. The current main

@@ -26,16 +26,30 @@ back to a self-hosted runner.
 1. A successful full main CI run can **propose** a version. The serialized writer
    updates only `package.json`, `package-lock.json` (both root version fields)
    and `CHANGELOG.md` in one commit on `release/calver`.
+   Before replacing an existing proposal branch, the writer re-reads the live
+   head and then updates that ref through GitHub's native `updateRefs` mutation
+   with `beforeOid` set to the exact generated commit it verified. A final read
+   followed by a force `PATCH` cannot do this: REST has no expected-before
+   predicate, so a contributor push landing between the read and the write would
+   be silently discarded. With `beforeOid`, that same race fails the mutation and
+   the writer stops instead of overwriting it; the contributor's commit is left
+   intact and the next run re-verifies the branch. `force` permits the deliberate
+   non-fast-forward (the replacement is based on current main), never a missing
+   precondition. Only the disposable generated branch is ever moved this way.
 2. The generated `calver:release` PR requires normal review and all required
-   checks. GITHUB_TOKEN-created changes do not trigger ordinary PR workflows:
-   the writer explicitly dispatches **all three** required workflows on the
-   updated branch head — `ci.yml`, `pr-lint.yml` and `secret-scan.yml` — and
-   fails closed if any dispatch fails. A dispatched `pr-lint` run has no
-   `pull_request` payload, so its required `title` job reads the live PR
-   metadata through `ci/pr-lint.ts`, binds it to the dispatched PR number and
-   exact head SHA, and only then runs the existing Python policy. Nothing writes
-   a synthetic commit status or check run. Do not merge on a partial set of
-   green checks, add an override, or use an admin merge.
+   checks. The writer explicitly dispatches **all three** workflows on the updated
+   branch head — `ci.yml`, `pr-lint.yml` and `secret-scan.yml` — for full coverage,
+   failing closed if any dispatch fails. A dispatched `pr-lint` run reads live PR
+   metadata through `ci/pr-lint.ts`, binds it to the PR number and exact head,
+   then runs the real Python policy under an explicitly selected Node runtime.
+   **Dispatch success is not required-check admission:** GitHub branch rulesets
+   do not count `workflow_dispatch` job checks as eligible PR evidence, even when
+   green. Token-created PR `opened`/`synchronize`/`reopened` events can create
+   separate native `pull_request` runs requiring approval. The writer reports
+   `checkAdmission` separately, bound to the new SHA, PR, repository and all three
+   workflow paths: `awaiting_pr_event`, `approval_required`, or `admitted`.
+   These are admission states, not check results, review consent or merge authority.
+   Nothing writes a synthetic status/check, self-approves a run or weakens a rule.
 3. Publication independently fetches the selected PR from GitHub. It must be a
    merged, non-draft, same-repository bot-created `release/calver` → `main` PR
    carrying the selection label, with its exact associated merge SHA and only
@@ -67,10 +81,30 @@ An active writer is never cancelled, but pending GitHub concurrency entries can
 coalesce: this is not a FIFO queue. Each surviving writer paginates the closed
 main-target PRs and revalidates selected merges oldest first through their live
 PR, commit association, allowed files, exact-SHA CI, manifests and shared plan.
-Already-published operations require matching Release/annotated-tag provenance
-and are skipped without another publication or deployment dispatch. Stale
+Already-published operations are settled **before mutable historical CI or a
+planner call**, using the committed version and direct Release/annotated-tag
+reads. Settlement verifies the frozen plan's canonical integrity ID, repository,
+version/tag and published Release marker, and requires the operation, policy and
+merge SHA to be this exact release. A coherent tag that belongs to a different
+SHA is not evidence about this one: another release legitimately owns that slot,
+so the shared planner allocates a fresh version and the PR is refreshed instead
+of being refused or mis-tagged. A tag whose own annotation disagrees with its
+target, or claims this SHA under another operation, is unprovenanced and refuses.
+This avoids one full shared registry scan per completed selection
+(multiplicative history reads).
+Only unresolved work reaches shared allocation/publication; shared arithmetic and
+publication-time validation remain authoritative. Settled operations are skipped
+without another publication or deployment dispatch, including delayed callbacks
+for older releases. Intentional redeployment uses guarded Deploy, never a writer
+replay. Stale
 historical selections never seed a proposal from old main; the triggering main
-SHA must pass its own full CI before refreshing the proposal.
+SHA must pass its own full CI before refreshing the proposal. A recovered release
+never suppresses a selected triggering merge: each is independently validated and
+published in merge order. Only an unrelated ordinary merge's new proposal is
+suppressed after recovery. A historical selection with completed failed CI is
+logged and skipped without publication, so it cannot prevent a different green
+selection from progressing; provider errors and incomplete evidence still fail
+closed, and failed CI on the triggering SHA remains an error.
 
 CI completion callbacks may arrive out of order. Successful `push`,
 `workflow_dispatch` and `schedule` full-CI origins can resume the writer, but only
@@ -82,6 +116,18 @@ move/delete a published tag.
 
 ## Failures, retry and rollback
 
+- **Native PR checks awaiting admission:** inspect the generated PR's exact-head
+  native `pull_request` runs, not the dispatch run's green badges. An authorized
+  repository-write maintainer can use GitHub's **Approve workflows to run** UI
+  where offered. This existing GitHub authority is not granted by this adapter;
+  same-repository GITHUB_TOKEN self-approval through REST is not established.
+  If no authorized execution route is available, keep the PR unmerged and route
+  that exact approval need to the repository's authorized executor. Do not create
+  a token, bypass policy, or infer approval from a green dispatch. After approval,
+  verify the exact-head native checks actually complete successfully and the
+  normal review gate passes before merge. No timer or auto-merge is added here.
+  See GitHub's [trigger contract](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)
+  and [required-check event contract](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
 - **No exact-SHA full CI yet:** publication is refused/deferred. A successful CI
   completion is the continuation; an old successful run on another SHA is not
   sufficient. Fix real CI failures instead of bypassing them.

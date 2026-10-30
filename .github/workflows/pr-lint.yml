@@ -92,6 +92,14 @@ jobs:
           COMMITS: ${{ toJSON(github.event.commits) }}
         run: python3 .github/scripts/pr_standards.py
 
+      # Sparse checkout has no package manifest or dependency install. Select
+      # the same TypeScript-capable runtime as CI without enabling npm caching.
+      - name: Set up dispatched lint runtime
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
       # Dispatch path: the payload above is empty for a dispatched run, so the
       # real PR metadata is fetched and bound to this exact head first.
       - name: Check dispatched PR title and body
