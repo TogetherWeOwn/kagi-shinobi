@@ -302,7 +302,7 @@ async function occupiedSelection() {
 // These cases were authored from the release requirements before applying the
 // unpublished caller patch. Both the baseline and that exact opaque candidate
 // must be reported: settlement's collision refusal can be new in the candidate.
-describe("occupied-slot progress and first-publication UTC admission", () => {
+describe("occupied-slot progress and pinned UTC publication boundary", () => {
   it("refreshes selected B when coherent published A legitimately occupies B's committed slot", async () => {
     const { repo, published, selected } = await occupiedSelection();
     repo.listed = [];
@@ -346,7 +346,10 @@ describe("occupied-slot progress and first-publication UTC admission", () => {
     expect(repo.calls.some((call) => call.path === `/pulls/${current.number}`)).toBe(true);
   });
 
-  it("refuses a fresh stale-date release when midnight passes in awaited publisher preparation before its first mutation", async () => {
+  // The immutable shared contract freezes the date inside publish(), including
+  // awaited preparation across midnight. Stale selections must refresh before
+  // that boundary; the caller cannot add an ignored first-write admission hook.
+  it("honors the frozen plan date when awaited publisher preparation crosses midnight before its first mutation", async () => {
     const repo = new Repository();
     repo.time = "2026-10-30T23:59:58Z";
     const current = repo.add();
@@ -363,22 +366,50 @@ describe("occupied-slot progress and first-publication UTC admission", () => {
         repo.time = "2026-10-31T00:00:01Z";
       }
     };
-    let result: Awaited<ReturnType<Repository["invoke"]>> | undefined;
-    let refusal: unknown;
-    try { result = await repo.invoke(); } catch (error) { refusal = error; }
-    expect(crossedAt, "exercise the awaited real publisher preparation, not a missing endpoint").toBeDefined();
-    expect(crossedAt?.method).toBe("GET");
-    expect(repo.planned[0]).toMatchObject({ sha: current.sha, date: "2026-10-30", version: "2026.1030.0" });
-    if (refusal !== undefined) {
-      expect(refusal).toBeInstanceOf(Error);
-      expect((refusal as Error).message).not.toMatch(/unexpected offline/);
-      expect((refusal as Error).message).toMatch(/date|midnight|stale|refresh|UTC/i);
+    expect(await repo.invoke()).toMatchObject({ status: "published", sha: current.sha, version: "2026.1030.0", tag: "v2026.1030.0", deploymentDispatched: true });
+    expect(crossedAt, "exercise the awaited real publisher preparation, not a missing endpoint").toMatchObject({ method: "GET", path: "/tags", at: "2026-10-30T23:59:58Z" });
+    expect(repo.planned).toHaveLength(1);
+    expect(repo.planned[0]).toMatchObject({ sha: current.sha, date: "2026-10-30", version: "2026.1030.0", tag: "v2026.1030.0" });
+    expect(repo.publications).toHaveLength(1);
+    expect(repo.publications[0]).toMatchObject({ created: true, sha: current.sha, date: "2026-10-30", version: "2026.1030.0", tag: "v2026.1030.0" });
+    expect(publicationMutations(repo)[0]).toMatchObject({ method: "POST", path: "/git/tags", at: "2026-10-31T00:00:01Z", body: { tag: "v2026.1030.0", object: current.sha } });
+    expect([...repo.refs.keys()]).toEqual(["v2026.1030.0"]);
+    expect([...repo.releases.keys()]).toEqual(["v2026.1030.0"]);
+    expect(repo.releases.get("v2026.1030.0")).toMatchObject({ tag_name: "v2026.1030.0", target_commitish: current.sha, draft: false, prerelease: false });
+    const ref = await repo.actual.ref("v2026.1030.0");
+    expect(ref?.sha).toBe(current.sha);
+    expect(repo.actual.provenance(ref!)).toMatchObject({ id: repo.planned[0].id, sha: current.sha, date: "2026-10-30", version: "2026.1030.0" });
+    expect(repo.proposal).toBeUndefined();
+    expect(repo.deploys.map((call) => call.body)).toEqual([{ ref: "main", inputs: { tag: "v2026.1030.0" } }]);
+  });
+
+  it("refreshes a stale committed date before publication using a fresh next-day shared plan", async () => {
+    const repo = new Repository();
+    repo.time = "2026-10-30T23:59:58Z";
+    const current = repo.add();
+    await repo.plan(current);
+    expect(current.version).toBe("2026.1030.0");
+    repo.listed = [];
+    repo.time = "2026-10-31T00:00:01Z";
+    repo.resetCounts();
+    expect(await repo.invoke()).toMatchObject({ status: "version-pr", version: "2026.1031.0", number: 200, headSha: "d".repeat(40) });
+    expect(repo.planned).toHaveLength(1);
+    expect(repo.planned[0]).toMatchObject({ sha: current.sha, date: "2026-10-31", version: "2026.1031.0", tag: "v2026.1031.0" });
+    expect(repo.proposal?.pull).toMatchObject({ state: "open", draft: false, labels: [{ name: "calver:release" }], head: { ref: "release/calver" }, base: { ref: "main" } });
+    expect(JSON.parse(repo.proposal?.files["package.json"] ?? "{}").version).toBe("2026.1031.0");
+    const lock = JSON.parse(repo.proposal?.files["package-lock.json"] ?? "{}");
+    expect(lock.version).toBe("2026.1031.0");
+    expect(lock.packages?.[""].version).toBe("2026.1031.0");
+    expect(repo.proposal?.files["CHANGELOG.md"]).toContain("## 2026.1031.0");
+    for (const workflow of ["ci.yml", "pr-lint.yml", "secret-scan.yml"]) {
+      expect(repo.calls.filter((call) => call.method === "POST" && call.path === `/actions/workflows/${workflow}/dispatches`).map((call) => call.body.ref)).toEqual(["release/calver"]);
     }
-    expect.soft(publicationMutations(repo), `first-write admission must observe the new UTC day; crossed during ${crossedAt?.path} at ${crossedAt?.at}; now=${repo.time}`).toEqual([]);
-    expect.soft(repo.releases.size).toBe(0);
-    expect.soft(result?.status).not.toBe("published");
-    expect.soft(repo.deploys).toEqual([]);
-    if (result?.status === "version-pr") expect(result.version).toBe("2026.1031.0");
+    expect(JSON.parse(repo.contents.get(current.sha)!["package.json"]).version).toBe("2026.1030.0");
+    expect(repo.publishCalls).toBe(0);
+    expect(publicationMutations(repo)).toEqual([]);
+    expect(repo.refs.size).toBe(0);
+    expect(repo.releases.size).toBe(0);
+    expect(repo.deploys).toEqual([]);
   });
 
   it("allows an admitted publication to finish after midnight when its first tag mutation was before midnight", async () => {
