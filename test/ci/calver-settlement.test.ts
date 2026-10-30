@@ -11,7 +11,7 @@ const REPO = "TogetherWeOwn/kagi-shinobi";
 const NOW = "2026-10-30T12:00:00Z";
 const TREE = "e".repeat(40);
 type Json = Record<string, unknown>;
-interface Call { method: string; path: string; query: URLSearchParams; body: Json }
+interface Call { method: string; path: string; query: URLSearchParams; body: Json; at: string }
 interface Selection {
   sha: string;
   number: number;
@@ -40,9 +40,15 @@ class Repository {
   forced = new Map<string, number>();
   calls: Call[] = [];
   publications: SharedPublication[] = [];
+  planned: SharedPlan[] = [];
   planCalls = 0;
   publishCalls = 0;
   currentSha = "0".repeat(39) + "1";
+  time = NOW;
+  onRead?: (call: Call) => Promise<void>;
+  afterTagObject?: () => void;
+  proposal: { headSha: string; pull: Json; files: Record<string, string> } | undefined;
+  private proposalFiles: Record<string, string> = {};
   private nextObject = 50_000;
   readonly actual: SharedReleaser;
   readonly releaser: SharedReleaser;
@@ -50,9 +56,14 @@ class Repository {
   constructor() {
     const { Releaser, GitHub } = pinnedCalver();
     const api = new GitHub({ token: "offline-shared-fixture", fetchImpl: this.fetch });
-    this.actual = new Releaser({ api, repository: REPO, now: () => new Date(NOW) });
+    this.actual = new Releaser({ api, repository: REPO, now: () => new Date(this.time) });
     this.releaser = {
-      plan: async (input) => { this.planCalls++; return this.actual.plan(input); },
+      plan: async (input) => {
+        this.planCalls++;
+        const plan = await this.actual.plan(input);
+        this.planned.push(plan);
+        return plan;
+      },
       notes: (plan) => this.actual.notes(plan),
       publish: async (plan, options) => {
         this.publishCalls++;
@@ -116,6 +127,7 @@ class Repository {
   resetCounts(): void {
     this.calls = [];
     this.publications = [];
+    this.planned = [];
     this.planCalls = 0;
     this.publishCalls = 0;
   }
@@ -130,7 +142,7 @@ class Repository {
       event: { action: "completed", repository: { full_name: REPO }, workflow_run: {
         id: 10_000 + this.selections.findIndex((entry) => entry.sha === sha), name: "CI", path: ".github/workflows/ci.yml",
         event: "push", head_sha: sha, head_branch: "main", head_repository: { full_name: REPO }, status: "completed", conclusion: "success",
-      } }, fetch: this.fetch, now: () => new Date(NOW), log: () => {}, releaser: this.releaser,
+      } }, fetch: this.fetch, now: () => new Date(this.time), log: () => {}, releaser: this.releaser,
     });
   }
 
@@ -140,8 +152,9 @@ class Repository {
     if (url.origin !== "https://api.github.com" || !url.pathname.startsWith(`/repos/${REPO}`)) throw new Error("unexpected offline provider origin/repository");
     const path = decodeURIComponent(url.pathname.slice(`/repos/${REPO}`.length));
     const body = request.body ? await request.json() as Json : {};
-    const call = { method: request.method, path, query: url.searchParams, body };
+    const call = { method: request.method, path, query: url.searchParams, body, at: this.time };
     this.calls.push(call);
+    if (request.method === "GET") await this.onRead?.(call);
     const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
     const forced = this.forced.get(`${request.method} ${path}`);
     if (forced) return json({ message: "provider-detail-not-for-logs" }, forced);
@@ -175,17 +188,20 @@ class Repository {
         return json([{ sha, commit: { message: "chore: record an offline selected release" } }]);
       }
       if (path === "/pulls") {
-        if (url.searchParams.get("state") === "open") return json([]);
+        if (url.searchParams.get("state") === "open") return json(this.proposal ? [this.proposal.pull] : []);
         return json((this.listed ?? this.selections).map((entry) => this.pull(entry, true)));
       }
       if ((match = path.match(/^\/commits\/([0-9a-f]{40})\/pulls$/))) return json(this.selections.filter((entry) => entry.sha === match![1]).map((entry) => this.pull(entry, true)));
       if ((match = path.match(/^\/pulls\/(\d+)(?:\/(files))?$/))) {
         const selection = this.selections.find((entry) => entry.number === Number(match![1]));
-        if (!selection) return json({}, 404);
-        return match[2] ? json(["package.json", "package-lock.json", "CHANGELOG.md"].map((filename) => ({ filename, status: "modified" }))) : json(this.pull(selection));
+        const pull = selection ? this.pull(selection) : this.proposal?.pull.number === Number(match[1]) ? this.proposal.pull : undefined;
+        if (!pull) return json({}, 404);
+        return match[2] ? json(["package.json", "package-lock.json", "CHANGELOG.md"].map((filename) => ({ filename, status: "modified" }))) : json(pull);
       }
       if (path.startsWith("/contents/")) {
-        const content = this.contents.get(url.searchParams.get("ref") ?? this.currentSha)?.[path.slice("/contents/".length)];
+        const ref = url.searchParams.get("ref") ?? this.currentSha;
+        const source = this.proposal && ["release/calver", this.proposal.headSha].includes(ref) ? this.proposal.files : this.contents.get(ref);
+        const content = source?.[path.slice("/contents/".length)];
         return content === undefined ? json({}, 404) : json({ type: "file", encoding: "base64", content: Buffer.from(content).toString("base64") });
       }
       if (path === "/actions/workflows/ci.yml/runs") {
@@ -197,13 +213,42 @@ class Repository {
         const runs = later ? [{ ...original, id: 20_000 + index, conclusion: later }, original] : [original];
         return json({ total_count: runs.length, workflow_runs: runs });
       }
+      if (path === "/actions/runs") return json({ total_count: 0, workflow_runs: [] });
       if (path === "/git/ref/heads/main") return json({ ref: "refs/heads/main", object: { type: "commit", sha: this.currentSha } });
-      if (path === "/git/ref/heads/release/calver") return json({}, 404);
+      if (path === "/git/ref/heads/release/calver") return this.proposal
+        ? json({ ref: "refs/heads/release/calver", object: { type: "commit", sha: this.proposal.headSha } }) : json({}, 404);
     }
+    if (request.method === "POST" && path === "/git/trees") {
+      this.proposalFiles = { ...this.contents.get(this.currentSha) };
+      for (const entry of body.tree as Array<{ path: string; content: string }>) this.proposalFiles[entry.path] = entry.content;
+      return json({ sha: TREE }, 201);
+    }
+    if (request.method === "POST" && path === "/git/commits") return json({ sha: "d".repeat(40), tree: { sha: body.tree }, parents: body.parents }, 201);
+    if (request.method === "POST" && path === "/git/refs" && body.ref === "refs/heads/release/calver") {
+      this.proposal = { headSha: String(body.sha), pull: {}, files: this.proposalFiles };
+      return json({ ref: body.ref, object: { type: "commit", sha: body.sha } }, 201);
+    }
+    if (request.method === "POST" && path === "/pulls") {
+      if (!this.proposal) throw new Error("proposal PR created before its version commit");
+      this.proposal.pull = {
+        number: 200, state: "open", merged: false, merged_at: null, draft: body.draft === true,
+        title: body.title, body: body.body, labels: [], user: { login: "github-actions[bot]", type: "Bot" },
+        head: { ref: body.head, sha: this.proposal.headSha, repo: { full_name: REPO } },
+        base: { ref: body.base, sha: this.currentSha, repo: { full_name: REPO } },
+      };
+      return json(this.proposal.pull, 201);
+    }
+    if (request.method === "POST" && path === "/issues/200/labels" && this.proposal) {
+      const labels = (body.labels as string[]).map((name) => ({ name }));
+      this.proposal.pull.labels = labels;
+      return json(labels);
+    }
+    if (request.method === "POST" && /^\/actions\/workflows\/(ci|pr-lint|secret-scan)\.yml\/dispatches$/.test(path)) return new Response(null, { status: 204 });
     if (request.method === "POST" && path === "/git/tags") {
       const sha = (this.nextObject++).toString(16).padStart(40, "0");
       const tag = { sha, tag: body.tag, message: body.message, object: { type: body.type, sha: body.object } };
       this.objects.set(sha, tag);
+      this.afterTagObject?.();
       return json(tag, 201);
     }
     if (request.method === "POST" && path === "/git/refs") {
@@ -228,6 +273,144 @@ class Repository {
     throw new Error(`unexpected offline request: ${request.method} ${path}${url.search}`);
   };
 }
+
+function publicationMutations(repo: Repository): Call[] {
+  return repo.writes.filter((call) => call.path === "/git/tags" || call.path === "/releases" || String(call.body.ref ?? "").startsWith("refs/tags/"));
+}
+
+// The counterexample is a coherent publication of A, not a tag whose target
+// disagrees with its frozen annotation. It must leave B free to ask the actual
+// shared planner for a reviewed refresh instead of accepting A as B's replay.
+async function occupiedSelection() {
+  const repo = new Repository();
+  await repo.seed(1);
+  const published = repo.selections[0];
+  const selected = repo.add();
+  selected.version = "2026.1030.0";
+  selected.tag = "v2026.1030.0";
+  repo.contents.set(selected.sha, files(selected.version));
+  const ref = await repo.actual.ref(published.tag);
+  if (!ref || !published.plan) throw new Error("real-engine publication fixture is absent");
+  repo.actual.validatePlan(published.plan);
+  expect(repo.actual.provenance(ref)).toMatchObject({ sha: published.sha, id: published.plan.id, version: "2026.1030.0" });
+  expect(ref.sha).toBe(published.sha);
+  expect(repo.releases.get(published.tag)).toMatchObject({ draft: false, prerelease: false });
+  expect(String(repo.releases.get(published.tag)!.body)).toContain(`<!-- calver-plan:${published.plan.id} -->`);
+  return { repo, published, selected };
+}
+
+// These cases were authored from the release requirements before applying the
+// unpublished caller patch. Both the baseline and that exact opaque candidate
+// must be reported: settlement's collision refusal can be new in the candidate.
+describe("occupied-slot progress and first-publication UTC admission", () => {
+  it("refreshes selected B when coherent published A legitimately occupies B's committed slot", async () => {
+    const { repo, published, selected } = await occupiedSelection();
+    repo.listed = [];
+    repo.resetCounts();
+    let result: Awaited<ReturnType<Repository["invoke"]>> | undefined;
+    let refusal: unknown;
+    try { result = await repo.invoke(selected.sha); } catch (error) { refusal = error; }
+    expect.soft(refusal, `A's coherent different-SHA publication must reach allocation/refresh; plannerCalls=${repo.planCalls}`).toBeUndefined();
+    expect.soft(repo.planned.map((plan) => ({ sha: plan.sha, version: plan.version }))).toContainEqual({ sha: selected.sha, version: "2026.1030.1" });
+    expect.soft(result).toMatchObject({ status: "version-pr", version: "2026.1030.1", number: 200, headSha: "d".repeat(40) });
+    expect.soft(repo.proposal?.pull).toMatchObject({ state: "open", draft: false, labels: [{ name: "calver:release" }], head: { ref: "release/calver" }, base: { ref: "main" } });
+    expect.soft(JSON.parse(repo.proposal?.files["package.json"] ?? "{}").version).toBe("2026.1030.1");
+    const lock = JSON.parse(repo.proposal?.files["package-lock.json"] ?? "{}");
+    expect.soft(lock.version).toBe("2026.1030.1");
+    expect.soft(lock.packages?.[""].version).toBe("2026.1030.1");
+    for (const workflow of ["ci.yml", "pr-lint.yml", "secret-scan.yml"]) {
+      expect.soft(repo.calls.filter((call) => call.method === "POST" && call.path === `/actions/workflows/${workflow}/dispatches`)).toHaveLength(1);
+    }
+    expect(publicationMutations(repo)).toEqual([]);
+    expect(repo.deploys).toEqual([]);
+    expect(repo.releases.size).toBe(1);
+    expect((await repo.actual.ref(published.tag))?.sha).toBe(published.sha);
+  });
+
+  it("does not let a legitimate occupied-slot backlog B poison a later selected current C", async () => {
+    const { repo, selected: collision } = await occupiedSelection();
+    const current = repo.add();
+    await repo.plan(current);
+    expect(current.version).toBe("2026.1030.1");
+    repo.listed = [collision];
+    repo.resetCounts();
+    let refusal: unknown;
+    try { await repo.invoke(current.sha); } catch (error) { refusal = error; }
+    expect.soft(refusal, "an older collision must neither settle B nor abort the surviving C callback").toBeUndefined();
+    expect.soft(repo.publications.filter((entry) => entry.created).map((entry) => ({ sha: entry.sha, tag: entry.tag }))).toEqual([
+      { sha: current.sha, tag: "v2026.1030.1" },
+    ]);
+    expect.soft(repo.deploys.map((call) => call.body)).toEqual([{ ref: "main", inputs: { tag: "v2026.1030.1" } }]);
+    expect(repo.publications.some((entry) => entry.sha === collision.sha)).toBe(false);
+    expect(repo.calls.some((call) => call.path === `/pulls/${collision.number}`)).toBe(true);
+    expect(repo.calls.some((call) => call.path === `/pulls/${current.number}`)).toBe(true);
+  });
+
+  it("refuses a fresh stale-date release when midnight passes in awaited publisher preparation before its first mutation", async () => {
+    const repo = new Repository();
+    repo.time = "2026-10-30T23:59:58Z";
+    const current = repo.add();
+    await repo.plan(current);
+    repo.listed = [];
+    repo.resetCounts();
+    let crossedAt: Call | undefined;
+    repo.onRead = async (call) => {
+      if (repo.publishCalls && call.path === "/tags" && !crossedAt && publicationMutations(repo).length === 0) {
+        crossedAt = call;
+        // Advance while the real publisher is suspended on a provider read,
+        // not in plan(), the caller date check or a made-up publish option.
+        await Promise.resolve();
+        repo.time = "2026-10-31T00:00:01Z";
+      }
+    };
+    let result: Awaited<ReturnType<Repository["invoke"]>> | undefined;
+    let refusal: unknown;
+    try { result = await repo.invoke(); } catch (error) { refusal = error; }
+    expect(crossedAt, "exercise the awaited real publisher preparation, not a missing endpoint").toBeDefined();
+    expect(crossedAt?.method).toBe("GET");
+    expect(repo.planned[0]).toMatchObject({ sha: current.sha, date: "2026-10-30", version: "2026.1030.0" });
+    if (refusal !== undefined) {
+      expect(refusal).toBeInstanceOf(Error);
+      expect((refusal as Error).message).not.toMatch(/unexpected offline/);
+      expect((refusal as Error).message).toMatch(/date|midnight|stale|refresh|UTC/i);
+    }
+    expect.soft(publicationMutations(repo), `first-write admission must observe the new UTC day; crossed during ${crossedAt?.path} at ${crossedAt?.at}; now=${repo.time}`).toEqual([]);
+    expect.soft(repo.releases.size).toBe(0);
+    expect.soft(result?.status).not.toBe("published");
+    expect.soft(repo.deploys).toEqual([]);
+    if (result?.status === "version-pr") expect(result.version).toBe("2026.1031.0");
+  });
+
+  it("allows an admitted publication to finish after midnight when its first tag mutation was before midnight", async () => {
+    const repo = new Repository();
+    repo.time = "2026-10-30T23:59:58Z";
+    const current = repo.add();
+    await repo.plan(current);
+    repo.listed = [];
+    repo.resetCounts();
+    repo.afterTagObject = () => { repo.time = "2026-10-31T00:00:01Z"; };
+    expect(await repo.invoke()).toMatchObject({ status: "published", sha: current.sha, tag: "v2026.1030.0" });
+    expect(publicationMutations(repo)[0]).toMatchObject({ method: "POST", path: "/git/tags", at: "2026-10-30T23:59:58Z" });
+    expect(publicationMutations(repo).some((call) => call.path === "/releases" && call.at === "2026-10-31T00:00:01Z")).toBe(true);
+    expect(repo.deploys).toHaveLength(1);
+  });
+
+  it("keeps an exact already-published replay settled across midnight without a new proposal or redeploy", async () => {
+    const repo = new Repository();
+    repo.time = "2026-10-30T23:59:58Z";
+    await repo.seed(1);
+    const current = repo.selections[0];
+    repo.listed = [];
+    repo.time = "2026-10-31T00:00:01Z";
+    repo.resetCounts();
+    await repo.invoke(current.sha);
+    expect(repo.writes).toEqual([]);
+    expect(repo.deploys).toEqual([]);
+    expect(repo.publications.every((entry) => entry.created === false)).toBe(true);
+    expect(repo.releases.size).toBe(1);
+    expect((await repo.actual.ref(current.tag))?.sha).toBe(current.sha);
+  });
+});
 
 async function measured(settled: number, filler: number) {
   const repo = new Repository();

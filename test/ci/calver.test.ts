@@ -35,6 +35,7 @@ import { disposePinnedCalver, validatePlanFixture } from "./shared-calver";
 afterAll(disposePinnedCalver);
 
 const REPO = "TogetherWeOwn/kagi-shinobi";
+const REPO_ID = "R_kgDOOfflineKagi";
 const SHA = "a".repeat(40);
 const OTHER_SHA = "b".repeat(40);
 const PR_SHA = "c".repeat(40);
@@ -123,7 +124,7 @@ beforeEach(async () => {
   ({ runCalver } = await import("../../ci/calver"));
 });
 
-const repo = () => ({ full_name: REPO, default_branch: "main", private: false });
+const repo = () => ({ full_name: REPO, node_id: REPO_ID, default_branch: "main", private: false });
 const selectedPull = () => ({
   number: 42,
   state: "closed",
@@ -241,6 +242,8 @@ interface World {
   admissionRuns?: PrAdmissionRun[];
   approvalRequiredRunIds?: number[];
   proposal?: ProposalState;
+  generatedCommitSha?: string;
+  concurrentRefSha?: string;
   returnedLabels?: string[];
   afterPlan?: () => void;
   publishError?: Error;
@@ -262,6 +265,12 @@ interface Call {
   body: Json;
   branchSha: string | null;
 }
+interface RefUpdate { name: string; beforeOid?: string; afterOid: string; force?: boolean }
+interface UpdateRefsInput { repositoryId: string; refUpdates: RefUpdate[]; clientMutationId?: string }
+function guardedInput(body: Json): UpdateRefsInput | undefined {
+  const variable = String(body.query).match(/\bupdateRefs\s*\(\s*input\s*:\s*\$(\w+)/)?.[1];
+  return variable ? (body.variables as Record<string, UpdateRefsInput> | undefined)?.[variable] : undefined;
+}
 function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
   const env: Env = {
     GITHUB_REPOSITORY: REPO, GITHUB_TOKEN: "offline-token", GITHUB_REF: "refs/heads/main",
@@ -282,6 +291,7 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
   const blobs = new Map<string, string>();
   const updatedTree = "8".repeat(40);
   const publishedTags = new Set<string>();
+  const refRaces: Array<{ from: string | null; to: string; path: string }> = [];
   const persist = () => {
     if (!state) return;
     state.branchSha = branchSha;
@@ -292,6 +302,12 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
     branchSha = sha;
     if (openPull?.head.ref === BRANCH) openPull = { ...openPull, head: { ...openPull.head, sha } };
     persist();
+  };
+  const raceBeforeRefMutation = (path: string) => {
+    if (!w.concurrentRefSha) return;
+    refRaces.push({ from: branchSha, to: w.concurrentRefSha, path });
+    updateBranch(w.concurrentRefSha);
+    w.concurrentRefSha = undefined;
   };
   const json = (value: unknown, status = 200) =>
     new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
@@ -306,6 +322,28 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
     calls.push({ method, path, query: url.searchParams, body, branchSha });
     const forced = w.status[`${method} ${path}`];
     if (forced) return json({ message: "provider-body-do-not-log" }, forced);
+    if (method === "POST" && path === "/graphql") {
+      const input = guardedInput(body);
+      const update = input?.refUpdates?.[0];
+      // This is the documented native updateRefs contract, not an invented
+      // expected-SHA REST field. A synthetic HTTP-200 GraphQL field error keeps
+      // the provider predicate observable without claiming exact error wording.
+      const graphError = (message: string) => json({ data: { updateRefs: null }, errors: [{ message, path: ["updateRefs"] }] });
+      if (!input || input.repositoryId !== REPO_ID || input.refUpdates?.length !== 1 || update?.name !== `refs/heads/${BRANCH}` ||
+        Object.keys(input).some((key) => !["repositoryId", "refUpdates", "clientMutationId"].includes(key)) ||
+        Object.keys(update).some((key) => !["name", "beforeOid", "afterOid", "force"].includes(key))) return graphError("Offline fixture: invalid repository/ref binding");
+      raceBeforeRefMutation(path);
+      if (update.beforeOid !== undefined && update.beforeOid !== branchSha) return graphError("Offline fixture: beforeOid does not match current ref");
+      if (!state?.commits[update.afterOid]) return graphError("Offline fixture: unknown replacement commit");
+      // Generated replacement commits are based on current main, not the old
+      // proposal. force allows that non-fast-forward but never waives beforeOid.
+      if (!update.force && update.afterOid !== branchSha && !state.commits[update.afterOid].parents.some((parent) => parent.sha === branchSha)) {
+        return graphError("Offline fixture: non-fast-forward replacement");
+      }
+      updateBranch(update.afterOid);
+      effects.push("version-commit");
+      return json({ data: { updateRefs: { clientMutationId: input.clientMutationId ?? null } } });
+    }
     if (method === "GET") {
       if (path === "") return json(repo());
       const associatedRoute = path.match(/^\/commits\/([0-9a-f]{40})\/pulls$/);
@@ -412,10 +450,10 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
       if (body.tree !== updatedTree) throw new Error("version commit did not bind the updated tree");
       const bot = { name: "github-actions[bot]", email: "41898282+github-actions[bot]@users.noreply.github.com" };
       const commit: ProposalCommit = {
-        sha: UPDATED_SHA, message: String(body.message), tree: { sha: updatedTree },
+        sha: w.generatedCommitSha ?? UPDATED_SHA, message: String(body.message), tree: { sha: updatedTree },
         parents: (body.parents as string[]).map((sha) => ({ sha })), author: bot, committer: bot,
       };
-      if (state) state.commits[UPDATED_SHA] = commit;
+      if (state) state.commits[commit.sha] = commit;
       return json(commit, 201);
     }
     if (method === "POST" && path === "/git/refs" && body.ref === `refs/heads/${BRANCH}`) {
@@ -424,7 +462,12 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
       return json({ ref: body.ref, object: { type: "commit", sha: branchSha } }, 201);
     }
     if (method === "PATCH" && path === `/git/refs/heads/${BRANCH}`) {
-      updateBranch(String(body.sha));
+      raceBeforeRefMutation(path);
+      // The REST ref-update API has sha/force, not a native expected-before
+      // predicate. Unknown custom JSON fields cannot turn this into CAS.
+      const next = String(body.sha);
+      if (body.force !== true && next !== branchSha && !state?.commits[next]?.parents.some((parent) => parent.sha === branchSha)) return json({ message: "Update is not a fast forward" }, 422);
+      updateBranch(next);
       effects.push("version-commit");
       return json({ ref: `refs/heads/${BRANCH}`, object: { type: "commit", sha: branchSha } });
     }
@@ -497,7 +540,7 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
     },
   };
   return {
-    env, deps, calls, pullLists, effects, logs, planned, planInputs, published,
+    env, deps, calls, pullLists, effects, logs, planned, planInputs, published, refRaces,
     candidate: () => candidate, pull: () => openPull,
     run: () => runCalver(env, deps),
     dispatches: (workflow: string) => calls.filter((c) => c.method === "POST" && c.path === `/actions/workflows/${workflow}/dispatches`),
@@ -988,6 +1031,92 @@ describe("partial proposal creation resumes from independently verified provenan
     const unlabeled = { ...selectedPull(), head: { ...selectedPull().head, sha: UPDATED_SHA }, labels: [] };
     const h = harness(world({ pull: unlabeled, backlog: [unlabeled] }));
     expect((await h.run()).status).not.toBe("published");
+    expectNoPublication(h);
+  });
+});
+
+// Extend the existing deps.fetch seam only: POST api.github.com/graphql with a
+// variable-bound UpdateRefsInput. repositoryId is the target repository Node ID
+// (GET /repos/{owner}/{repo}.node_id); name is the fully qualified generated ref.
+// beforeOid must bind the last independently verified G even when force permits
+// a non-fast-forward replacement. No source helper, REST expected-SHA invention,
+// new credential, live GraphQL mutation or check-success fabrication is used.
+// Docs: https://docs.github.com/en/graphql/reference/git
+//       https://docs.github.com/en/graphql/reference/input-objects#refupdate
+// The synthetic mismatch response is a GraphQL errors[] envelope (HTTP 200),
+// not a promise about GitHub's undocumented exact mismatch status/message.
+describe("native conditional replacement of a generated proposal", () => {
+  const replacement = "7".repeat(40);
+  const contributorSha = "9".repeat(40);
+
+  async function generatedProposal() {
+    const state = proposalState();
+    const w = world({ pull: null, proposal: state, files: manifests("1.0.1") });
+    await harness(w).run();
+    expect(state.branchSha).toBe(UPDATED_SHA);
+    expect(state.pull).toMatchObject({ user: { login: "github-actions[bot]" }, labels: [{ name: LABEL }], head: { sha: UPDATED_SHA } });
+    expect(state.commits[UPDATED_SHA]).toMatchObject({ sha: UPDATED_SHA, author: { name: "github-actions[bot]" }, parents: [{ sha: SHA }] });
+    // A distinct literal plan/commit ensures the positive control really
+    // replaces G, rather than accepting a no-op update of the same fixed OID.
+    w.plans = [{ version: "2026.1030.1", tag: "v2026.1030.1" }];
+    w.generatedCommitSha = replacement;
+    return { state, w };
+  }
+
+  it("replaces an unchanged generated G using repository/ref-bound native beforeOid=G", async () => {
+    const { state, w } = await generatedProposal();
+    const h = harness(w);
+    expect(await h.run()).toMatchObject({ status: "version-pr", version: "2026.1030.1", headSha: replacement });
+    expect(state.branchSha).toBe(replacement);
+    expect(state.pull?.head.sha).toBe(replacement);
+    const updates = h.calls.filter((call) => call.method === "POST" && call.path === "/graphql");
+    expect(updates, "successful replacement still needs an atomic expected-before predicate").toHaveLength(1);
+    expect(guardedInput(updates[0].body)).toMatchObject({
+      repositoryId: REPO_ID,
+      refUpdates: [{ name: `refs/heads/${BRANCH}`, beforeOid: UPDATED_SHA, afterOid: replacement, force: true }],
+    });
+    expect(h.calls.filter((call) => call.method === "PATCH" && call.path === `/git/refs/heads/${BRANCH}`)).toEqual([]);
+    for (const workflow of ["ci.yml", "pr-lint.yml", "secret-scan.yml"]) {
+      expect(h.dispatches(workflow)).toHaveLength(1);
+      expect(h.dispatches(workflow)[0].branchSha).toBe(replacement);
+    }
+    expectNoPublication(h);
+  });
+
+  it("preserves contributor H arriving after the final verified G read and refuses the lost update", async () => {
+    const { state, w } = await generatedProposal();
+    const contributor = { name: "contributor", email: "contributor@example.test" };
+    state.commits[contributorSha] = {
+      ...state.commits[UPDATED_SHA], sha: contributorSha, message: "fix: concurrent contribution after writer read",
+      parents: [{ sha: UPDATED_SHA }], author: contributor, committer: contributor,
+    };
+    // Race at the actual provider mutation boundary, not after the first GET:
+    // another last-second GET can never make an unchecked force PATCH safe.
+    w.concurrentRefSha = contributorSha;
+    const h = harness(w);
+    let result: Result | undefined;
+    let refusal: unknown;
+    try { result = await h.run(); } catch (error) { refusal = error; }
+    expect(h.refRaces.map(({ from, to }) => ({ from, to }))).toEqual([{ from: UPDATED_SHA, to: contributorSha }]);
+    expect.soft(h.calls.some((call) => call.method === "GET" && [`/git/commits/${UPDATED_SHA}`, `/commits/${UPDATED_SHA}`].includes(call.path)), "start from independently verified generated provenance").toBe(true);
+    const mutationIndex = h.calls.findIndex((call) => call.method === "POST" && call.path === "/graphql" || call.method === "PATCH" && call.path === `/git/refs/heads/${BRANCH}`);
+    expect(h.calls.slice(0, mutationIndex).filter((call) => call.method === "GET" && call.path === `/git/ref/heads/${BRANCH}`).at(-1)?.branchSha, "even the final pre-mutation ref read still observed G").toBe(UPDATED_SHA);
+    const updates = h.calls.filter((call) => call.method === "POST" && call.path === "/graphql");
+    expect.soft(updates, "the provider must evaluate native beforeOid, not a client-side final GET").toHaveLength(1);
+    if (updates.length) expect(guardedInput(updates[0].body)).toMatchObject({
+      repositoryId: REPO_ID,
+      refUpdates: [{ name: `refs/heads/${BRANCH}`, beforeOid: UPDATED_SHA, afterOid: replacement }],
+    });
+    expect.soft(state.branchSha, "a lost CAS must leave H intact").toBe(contributorSha);
+    expect.soft(state.pull?.head.sha).toBe(contributorSha);
+    expect.soft(result?.status, "HTTP-200 GraphQL errors cannot become a successful version PR result").not.toBe("version-pr");
+    expect.soft(result?.status).not.toBe("published");
+    expect.soft(h.effects).not.toContain("version-commit");
+    for (const workflow of ["ci.yml", "pr-lint.yml", "secret-scan.yml"]) expect.soft(h.dispatches(workflow)).toEqual([]);
+    if (refusal !== undefined) {
+      expect(refusal).toBeInstanceOf(Error);
+      expect((refusal as Error).message).not.toMatch(/unexpected GitHub request|unexpected origin/);
+    }
     expectNoPublication(h);
   });
 });
