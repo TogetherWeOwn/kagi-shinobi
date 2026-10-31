@@ -70,6 +70,7 @@ interface Pull {
   merged_at: string | null;
   merge_commit_sha: string | null;
   draft: boolean;
+  title?: string;
   user: { login: string; type: string };
   labels: Array<{ name: string }>;
   head: { ref: string; sha: string; repo: Repository | null };
@@ -211,8 +212,12 @@ function canonical(value: unknown): string {
 // this SHA? A tag whose frozen record is coherent but names a different SHA is
 // not evidence about this one — another release legitimately owns the slot, so
 // the shared planner must allocate afresh rather than be told this SHA settled.
-// A tag whose own record is internally inconsistent, or that claims this SHA
-// under a different operation, is unprovenanced and refuses.
+// A lightweight tag carries no provenance at all: at another SHA it is foreign
+// inventory the shared allocator already counts, but at THIS SHA the occupied
+// name is ambiguous (it cannot prove it is not this operation's own stripped
+// marker), so it refuses. A tag whose own record is internally inconsistent,
+// or that claims this SHA under a different operation, is unprovenanced and
+// refuses. Lookup errors propagate; a slot is never assumed empty.
 async function settledRelease(api: Api, sha: string, version: string): Promise<Result | undefined> {
   const name = `v${version}`;
   const path = encodeURIComponent(name);
@@ -221,6 +226,11 @@ async function settledRelease(api: Api, sha: string, version: string): Promise<R
     // A Release without its annotated tag proves nothing about its source SHA.
     const orphan = await api.request("GET", `/releases/tags/${path}`, undefined, true);
     requireValue(!orphan, "release lacks operation provenance");
+    return undefined;
+  }
+  if (ref.object?.type === "commit") {
+    requireValue(SHA.test(ref.object.sha) && ref.object.sha !== sha,
+      "lightweight tag at this SHA lacks operation provenance; explicit repair required");
     return undefined;
   }
   requireValue(ref.object?.type === "tag" && SHA.test(ref.object.sha), "release lacks operation provenance");
@@ -277,19 +287,31 @@ async function checkAdmission(api: Api, number: number, sha: string): Promise<No
 }
 
 const PROPOSAL_MARKER = "\n\ncalver-proposal-v1\n";
-async function requireGeneratedProposal(api: Api, sha: string): Promise<void> {
-  const commit = await api.get<{ sha: string; message: string; tree: { sha: string }; parents: Array<{ sha: string }> }>(`/git/commits/${sha}`);
+// Both halves are fetched before either is judged: the durable marker text is
+// copyable, and PR metadata survives a contributor replacing the head. Only
+// the commit's own marker plus its provider-linked author/committer accounts
+// prove the generator owns this head. Returns the marker's frozen version.
+async function generatedHeadVersion(api: Api, sha: string): Promise<string> {
+  const commit = await api.request<{ sha: string; message: string; tree: { sha: string }; parents: Array<{ sha: string }> }>(
+    "GET", `/git/commits/${sha}`, undefined, true);
+  const identity = await api.request<{ author: { login: string; type: string } | null; committer: { login: string; type: string } | null }>(
+    "GET", `/commits/${sha}`, undefined, true);
+  requireValue(commit, "selected head is not a known generated commit");
   const marker = commit.message?.split(PROPOSAL_MARKER);
   requireValue(marker?.length === 2, "version branch lacks generated proposal provenance");
   const proof = object(JSON.parse(marker[1]));
   requireValue(commit.sha === sha && proof.repository === REPOSITORY && typeof proof.baseSha === "string" && SHA.test(proof.baseSha) &&
     commit.parents?.length === 1 && commit.parents[0].sha === proof.baseSha && proof.treeSha === commit.tree?.sha && SHA.test(commit.tree.sha) &&
     typeof proof.version === "string" && marker[0] === `chore: release ${proof.version}`, "version branch generated provenance mismatch");
-  const identity = await api.get<{ author: { login: string; type: string } | null; committer: { login: string; type: string } | null }>(`/commits/${sha}`);
-  requireValue(identity.author?.login === "github-actions[bot]" && identity.author.type === "Bot" &&
+  requireValue(identity && identity.author?.login === "github-actions[bot]" && identity.author.type === "Bot" &&
     identity.committer?.login === "github-actions[bot]" && identity.committer.type === "Bot", "version branch has an unknown generated owner");
+  return proof.version;
+}
+
+async function requireGeneratedProposal(api: Api, sha: string): Promise<void> {
+  const version = await generatedHeadVersion(api, sha);
   const source = await filesAt(api, sha);
-  requireValue(source.pkg.version === proof.version && source.notes.includes(`## ${proof.version}\n`), "generated proposal contents mismatch");
+  requireValue(source.pkg.version === version && source.notes.includes(`## ${version}\n`), "generated proposal contents mismatch");
 }
 
 async function versionPr(api: Api, deps: Deps, sha: string, plan: Plan, source: Files): Promise<Result> {
@@ -402,6 +424,16 @@ export async function runCalver(env: Env, deps: Deps): Promise<Result> {
   backlog.sort((a, b) => a.merged_at!.localeCompare(b.merged_at!) || a.number - b.number);
   let reconciled: Result | undefined;
   for (const pull of backlog) {
+    // Inexpensive direct exact settlement first: the annotated tag plus its
+    // Release record answers "is this exact operation already published?" in a
+    // few reads, before the heavier association/file/manifest verification a
+    // live or unsettled selection still gets. Retained settled history must
+    // leave most of the repository-token read allowance for current work.
+    const titleVersion = /^chore: release (\d{4}\.\d{3,4}\.\d+)$/.exec(pull.title ?? "")?.[1];
+    if (titleVersion && await settledRelease(api, pull.merge_commit_sha!, titleVersion)) {
+      deps.log(`backlog selection #${pull.number} already published at ${pull.merge_commit_sha}; skipping reconciliation`);
+      continue;
+    }
     const result = await releaseCommit(api, deps, pull.merge_commit_sha!, pull.number);
     if (result.status === "published") reconciled = result;
   }
@@ -435,6 +467,14 @@ async function releaseCommit(api: Api, deps: Deps, sha: string, backlogNumber?: 
       deps.log(`selected release #${pull.number} already published at ${sha}; no publication or deploy replay`);
       return backlogNumber === undefined ? settled : { status: "ignored" };
     }
+    // Bot PR metadata (author, labels, merged file scope) survives a
+    // contributor replacing the proposal head, so it cannot attest that head.
+    // Only the durable commit marker plus provider-linked identities prove the
+    // merged selection was generated. A squash merge SHA normally differs from
+    // that head — bind the version, never head === merge_commit_sha.
+    requireValue(SHA.test(pull.head.sha), "selected version PR head is not an exact generated commit");
+    const headVersion = await generatedHeadVersion(api, pull.head.sha);
+    requireValue(headVersion === source.pkg.version, "selected version PR generated head does not bind the merged version");
   }
   const ci = await readCi(api, sha);
   if (ci.state === "failed") {
