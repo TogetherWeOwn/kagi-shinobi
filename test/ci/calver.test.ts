@@ -14,8 +14,10 @@
 // same-repository release/calver -> main, independently fetched merged PR whose
 // merge_commit_sha is this invocation's exact main SHA. No event/body/package
 // string alone authorizes publication. Verify commit-associated PRs through
-// /commits/{sha}/pulls, /pulls/{number} and /pulls/{number}/files. Operation
-// identity survives a new run ID.
+// /commits/{sha}/pulls, /pulls/{number} and /pulls/{number}/files. Also verify
+// the merged PR's generated head through provider-linked commit identities and
+// durable generator evidence; a squash merge SHA normally differs from its head.
+// Operation identity survives a new run ID.
 //
 // Version PRs atomically commit package.json, package-lock.json and CHANGELOG.md
 // with Git Data tree/commit/ref APIs, create/update a normal reviewed PR, then
@@ -30,7 +32,7 @@
 // load in beforeEach so every acceptance case remains visible in the red run.
 import { createHash } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { disposePinnedCalver, validatePlanFixture } from "./shared-calver";
+import { disposePinnedCalver, proposalCommitFixture, validatePlanFixture, type GeneratedProposalCommit as ProposalCommit } from "./shared-calver";
 
 afterAll(disposePinnedCalver);
 
@@ -165,21 +167,18 @@ function manifests(version = VERSION): Record<string, string> {
   };
 }
 
-interface ProposalCommit {
-  sha: string;
-  message: string;
-  tree: { sha: string };
-  parents: Array<{ sha: string }>;
-  author: { name: string; email: string };
-  committer: { name: string; email: string };
+interface CommitAccounts {
+  author: { login: string; type: "Bot" | "User" } | null;
+  committer: { login: string; type: "Bot" | "User" } | null;
 }
 interface ProposalState {
   branchSha: string | null;
   pull: Pull | null;
   files: Record<string, string>;
   commits: Record<string, ProposalCommit>;
+  accounts: Record<string, CommitAccounts>;
 }
-const proposalState = (): ProposalState => ({ branchSha: null, pull: null, files: {}, commits: {} });
+const proposalState = (): ProposalState => ({ branchSha: null, pull: null, files: {}, commits: {}, accounts: {} });
 
 interface CiRun {
   id: number;
@@ -242,6 +241,8 @@ interface World {
   admissionRuns?: PrAdmissionRun[];
   approvalRequiredRunIds?: number[];
   proposal?: ProposalState;
+  headCommits?: Record<string, ProposalCommit>;
+  commitAccounts?: Record<string, CommitAccounts>;
   generatedCommitSha?: string;
   concurrentRefSha?: string;
   returnedLabels?: string[];
@@ -377,11 +378,22 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
       if (path === `/git/ref/heads/${BRANCH}`) return branchSha
         ? json({ ref: `refs/heads/${BRANCH}`, object: { type: "commit", sha: branchSha } }) : json({}, 404);
       const commitRoute = path.match(/^\/(git\/)?commits\/([0-9a-f]{40})$/);
-      if (commitRoute && state?.commits[commitRoute[2]]) {
-        const commit = state.commits[commitRoute[2]];
-        if (commitRoute[1]) return json(commit);
-        const author = { login: commit.author.name, type: commit.author.name === "github-actions[bot]" ? "Bot" : "User" };
-        return json({ sha: commit.sha, commit, author, committer: author });
+      if (commitRoute) {
+        // Seed only the two known legacy generated heads. Arbitrary OIDs need
+        // explicit commit evidence; bot PR metadata cannot manufacture ownership.
+        const declared = !state && [PR_SHA, "6".repeat(40)].includes(commitRoute[2])
+          ? [...Object.values(w.pullDetails ?? {}), ...pulls].find((pull) => pull.head.sha === commitRoute[2]) : undefined;
+        const commit = state?.commits[commitRoute[2]] ?? w.headCommits?.[commitRoute[2]] ?? (declared
+          ? proposalCommitFixture(declared.head.sha, declared.base.sha, TREE_SHA, declared.title.replace(/^chore: release /, "")) : undefined);
+        if (commit) {
+          if (commitRoute[1]) return json(commit);
+          // REST accounts are provider-linked identities, not a conversion from
+          // self-declared Git names/emails. Author and committer vary separately.
+          const accounts = w.commitAccounts?.[commit.sha] ?? state?.accounts[commit.sha] ?? (declared
+            ? { author: { login: "github-actions[bot]", type: "Bot" }, committer: { login: "github-actions[bot]", type: "Bot" } }
+            : { author: null, committer: null });
+          return json({ sha: commit.sha, commit, ...accounts });
+        }
       }
       if (path === `/git/commits/${SHA}` || path === `/git/commits/${w.mainSha}`) return json({ sha: path.split("/").at(-1), tree: { sha: TREE_SHA } });
       if (path.startsWith("/contents/")) {
@@ -448,12 +460,15 @@ function harness(w = world(), envOver: Env = {}, eventOver?: unknown) {
     }
     if (method === "POST" && path === "/git/commits") {
       if (body.tree !== updatedTree) throw new Error("version commit did not bind the updated tree");
-      const bot = { name: "github-actions[bot]", email: "41898282+github-actions[bot]@users.noreply.github.com" };
+      const bot = { name: "github-actions[bot]", email: "41898282+github-actions[bot]@users.noreply.github.com", date: w.time };
       const commit: ProposalCommit = {
         sha: w.generatedCommitSha ?? UPDATED_SHA, message: String(body.message), tree: { sha: updatedTree },
         parents: (body.parents as string[]).map((sha) => ({ sha })), author: bot, committer: bot,
       };
-      if (state) state.commits[commit.sha] = commit;
+      if (state) {
+        state.commits[commit.sha] = commit;
+        state.accounts[commit.sha] = { author: { login: "github-actions[bot]", type: "Bot" }, committer: { login: "github-actions[bot]", type: "Bot" } };
+      }
       return json(commit, 201);
     }
     if (method === "POST" && path === "/git/refs" && body.ref === `refs/heads/${BRANCH}`) {
@@ -1118,6 +1133,105 @@ describe("native conditional replacement of a generated proposal", () => {
       expect((refusal as Error).message).not.toMatch(/unexpected GitHub request|unexpected origin/);
     }
     expectNoPublication(h);
+  });
+});
+
+// Generate the proposal through the caller first, then model a normal squash
+// merge. PR authorship/labels survive a contributor replacing its head, but
+// cannot attest that new commit. No second review gate or head==merge assertion.
+// REST /commits/{sha} exposes linked accounts separately from commit.author and
+// commit.committer; /git/commits/{sha} alone exposes only self-declared Git data.
+describe("merged selection binds the generated proposal head", () => {
+  async function mergedProposal(deletedBranch = false) {
+    const state = proposalState();
+    const initial = world({ pull: null, proposal: state, files: manifests("1.0.1"), mainSha: OTHER_SHA, ciRuns: [ciRun(OTHER_SHA)] });
+    await harness(initial, { GITHUB_SHA: OTHER_SHA }, { ref: "refs/heads/main", after: OTHER_SHA, repository: repo() }).run();
+    const generated = state.pull;
+    if (!generated) throw new Error("fixture did not generate a version PR");
+    expect(state.commits[UPDATED_SHA]).toEqual(proposalCommitFixture(UPDATED_SHA, OTHER_SHA, "8".repeat(40), VERSION));
+    const pull: Pull = { ...generated, state: "closed", merged: true, merged_at: "2026-10-30T06:02:00Z", merge_commit_sha: SHA };
+    state.commits[SHA] = {
+      ...state.commits[UPDATED_SHA], sha: SHA, message: `chore: release ${VERSION} (#${pull.number})`,
+      committer: { name: "GitHub", email: "noreply@github.com", date: pull.merged_at! },
+    };
+    state.accounts[SHA] = { author: { login: "github-actions[bot]", type: "Bot" }, committer: { login: "web-flow", type: "Bot" } };
+    state.pull = null;
+    state.branchSha = deletedBranch ? null : UPDATED_SHA;
+    const w = world({
+      pull, associated: [pull], pullDetails: { [pull.number]: pull }, backlog: [], proposal: state,
+      files: { ...state.files }, filesBySha: { [SHA]: { ...state.files }, [UPDATED_SHA]: { ...state.files } },
+      ciRuns: [ciRun(SHA)], time: "2026-10-30T06:03:00Z",
+    });
+    return { state, pull, w };
+  }
+
+  async function expectUnselected(h: ReturnType<typeof harness>, head: string) {
+    let result: Result | undefined;
+    let refusal: unknown;
+    try { result = await h.run(); } catch (error) { refusal = error; }
+    if (refusal !== undefined) {
+      expect(refusal).toBeInstanceOf(Error);
+      expect((refusal as Error).message).not.toMatch(/unexpected GitHub request|unexpected origin/);
+      expect((refusal as Error).message).toMatch(/generated|owner|ownership|provenance|head|author|committer|marker/i);
+    }
+    expect.soft(result?.status, "bot PR metadata and merged-SHA CI cannot select an unowned head").not.toBe("published");
+    expect.soft(h.published).toEqual([]);
+    expect.soft(h.dispatches("deploy.yml")).toEqual([]);
+    expect.soft(h.calls.some((call) => call.method === "GET" && call.path === `/commits/${head}`), "verify the selected head's provider-linked identity, not only the merge SHA").toBe(true);
+    expect(h.calls.filter((call) => call.method !== "GET")).toEqual([]);
+  }
+
+  it.each(["retained", "deleted"])("publishes the squash SHA of a genuine generated head with its branch %s", async (branch) => {
+    const { state, pull, w } = await mergedProposal(branch === "deleted");
+    expect(pull.head.sha).toBe(UPDATED_SHA);
+    expect(pull.merge_commit_sha).toBe(SHA);
+    expect(pull.head.sha).not.toBe(pull.merge_commit_sha);
+    const h = harness(w);
+    expect(await h.run()).toMatchObject({ status: "published", sha: SHA, version: VERSION, tag: TAG, deploymentDispatched: true });
+    expect(h.published.map(({ plan }) => plan.sha)).toEqual([SHA]);
+    expect(h.dispatches("deploy.yml").map((call) => call.body)).toEqual([{ ref: "main", inputs: { tag: TAG } }]);
+    expect(h.effects).toEqual(["publish", "dispatch-deploy"]);
+    expect(state.branchSha).toBe(branch === "deleted" ? null : UPDATED_SHA);
+    expect(h.calls.filter((call) => call.path === "/actions/workflows/ci.yml/runs").every((call) => call.query.get("head_sha") === SHA)).toBe(true);
+  });
+
+  it("refuses a contributor replacement despite the merged PR retaining its bot author, label and three-file scope", async () => {
+    const { state, pull, w } = await mergedProposal();
+    const head = "9".repeat(40);
+    const contributor = { name: "contributor", email: "contributor@example.test", date: "2026-10-30T06:01:30Z" };
+    state.commits[head] = { ...state.commits[UPDATED_SHA], sha: head, message: "fix: contributor replaces generated proposal", parents: [{ sha: UPDATED_SHA }], author: contributor, committer: contributor };
+    state.accounts[head] = { author: { login: "contributor", type: "User" }, committer: { login: "contributor", type: "User" } };
+    pull.head = { ...pull.head, sha: head };
+    state.branchSha = head;
+    w.filesBySha![head] = { ...state.files };
+    expect(pull).toMatchObject({ state: "closed", merged: true, user: { login: "github-actions[bot]" }, labels: [{ name: LABEL }], merge_commit_sha: SHA });
+    await expectUnselected(harness(w), head);
+  });
+
+  it.each(["author", "committer"] as const)("refuses a copied generated marker when the head's linked GitHub %s is not the bot", async (identity) => {
+    const { state, pull, w } = await mergedProposal(true);
+    const head = "9".repeat(40);
+    const genuine = state.commits[UPDATED_SHA];
+    state.commits[head] = {
+      ...structuredClone(genuine), sha: head,
+      [identity]: { ...genuine[identity], name: "github-actions[bot]", email: "contributor@example.test", date: "2026-10-30T06:01:30Z" },
+    };
+    w.commitAccounts = { [head]: { ...state.accounts[UPDATED_SHA], [identity]: { login: "contributor", type: "User" } } };
+    pull.head = { ...pull.head, sha: head };
+    w.filesBySha![head] = { ...state.files };
+    expect(state.commits[head].message).toBe(genuine.message);
+    expect(state.commits[head].author.name).toBe("github-actions[bot]");
+    expect(state.commits[head].committer.name).toBe("github-actions[bot]");
+    await expectUnselected(harness(w), head);
+  });
+
+  it("propagates a selected-head commit-detail API failure instead of publishing on PR metadata alone", async () => {
+    const { w } = await mergedProposal(true);
+    w.status[`GET /commits/${UPDATED_SHA}`] = 503;
+    const h = harness(w);
+    await expect.soft(h.run()).rejects.toThrow(/HTTP 503/);
+    expect.soft(h.published).toEqual([]);
+    expect(h.dispatches("deploy.yml")).toEqual([]);
   });
 });
 

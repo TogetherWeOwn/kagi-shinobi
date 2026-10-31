@@ -4,7 +4,7 @@
 // counts; no elapsed-time assertion or real GitHub mutation is involved.
 import { afterAll, describe, expect, it } from "vitest";
 import { runCalver } from "../../ci/calver";
-import { disposePinnedCalver, pinnedCalver, type SharedPlan, type SharedPublication, type SharedReleaser } from "./shared-calver";
+import { disposePinnedCalver, pinnedCalver, proposalCommitFixture, type SharedPlan, type SharedPublication, type SharedReleaser } from "./shared-calver";
 
 afterAll(disposePinnedCalver);
 const REPO = "TogetherWeOwn/kagi-shinobi";
@@ -43,6 +43,7 @@ class Repository {
   planned: SharedPlan[] = [];
   planCalls = 0;
   publishCalls = 0;
+  getLimit = Number.POSITIVE_INFINITY;
   currentSha = "0".repeat(39) + "1";
   time = NOW;
   onRead?: (call: Call) => Promise<void>;
@@ -86,7 +87,7 @@ class Repository {
       merge_commit_sha: selection.sha, draft: false,
       user: { login: "github-actions[bot]", type: "Bot" }, labels: [{ name: "calver:release" }],
       head: { ref: "release/calver", sha: (80_000 + index).toString(16).padStart(40, "0"), repo: { full_name: REPO } },
-      base: { ref: "main", sha: this.currentSha, repo: { full_name: REPO } },
+      base: { ref: "main", sha: index ? this.selections[index - 1].sha : "c".repeat(40), repo: { full_name: REPO } },
       title: `chore: release ${selection.version}`, body: `Release ${selection.version}`,
     };
     if (summary) delete detail.merged;
@@ -156,11 +157,27 @@ class Repository {
     this.calls.push(call);
     if (request.method === "GET") await this.onRead?.(call);
     const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
+    const paginate = (values: unknown[]) => {
+      const size = Number(url.searchParams.get("per_page") ?? 30);
+      const page = Number(url.searchParams.get("page") ?? 1);
+      const last = Math.max(1, Math.ceil(values.length / size));
+      const response = json(values.slice((page - 1) * size, page * size));
+      const links: string[] = [];
+      for (const [relation, target] of [["next", page < last ? page + 1 : 0], ["last", page < last ? last : 0], ["prev", page > 1 ? page - 1 : 0], ["first", page > 1 ? 1 : 0]] as const) {
+        if (!target) continue;
+        const next = new URL(url);
+        next.searchParams.set("page", String(target));
+        links.push(`<${next}>; rel="${relation}"`);
+      }
+      if (links.length) response.headers.set("link", links.join(", "));
+      return response;
+    };
     const forced = this.forced.get(`${request.method} ${path}`);
     if (forced) return json({ message: "provider-detail-not-for-logs" }, forced);
     let match: RegExpMatchArray | null;
     if (request.method === "GET") {
-      if (path === "/tags") return json(Array.from(this.refs, ([name, ref]) => {
+      if (Number.isFinite(this.getLimit) && this.gets > this.getLimit) return json({ message: "API rate limit exceeded for offline repository token" }, 403);
+      if (path === "/tags") return paginate(Array.from(this.refs, ([name, ref]) => {
         let target = ref.object;
         if (target.type === "tag") target = this.objects.get(target.sha)!.object as typeof target;
         return { name, commit: { sha: target.sha } };
@@ -168,7 +185,16 @@ class Repository {
       if ((match = path.match(/^\/git\/ref\/tags\/(.+)$/))) return this.refs.has(match[1]) ? json(this.refs.get(match[1])) : json({}, 404);
       if ((match = path.match(/^\/git\/tags\/([0-9a-f]{40})$/))) return this.objects.has(match[1]) ? json(this.objects.get(match[1])) : json({}, 404);
       if ((match = path.match(/^\/releases\/tags\/(.+)$/))) return this.releases.has(match[1]) ? json(this.releases.get(match[1])) : json({}, 404);
-      if ((match = path.match(/^\/git\/commits\/([0-9a-f]{40})$/))) return this.contents.has(match[1]) ? json({ sha: match[1], tree: { sha: TREE } }) : json({}, 404);
+      if ((match = path.match(/^\/(git\/)?commits\/([0-9a-f]{40})$/))) {
+        const index = this.selections.findIndex((_entry, number) => (80_000 + number).toString(16).padStart(40, "0") === match![2]);
+        if (index >= 0) {
+          const selection = this.selections[index];
+          const date = new Date(Date.parse("2026-10-30T06:00:00Z") + index * 1_000 - 500).toISOString();
+          const commit = proposalCommitFixture(match[2], index ? this.selections[index - 1].sha : "c".repeat(40), TREE, selection.version, date);
+          return match[1] ? json(commit) : json({ sha: commit.sha, commit, author: { login: "github-actions[bot]", type: "Bot" }, committer: { login: "github-actions[bot]", type: "Bot" } });
+        }
+        return this.contents.has(match[2]) || match[2] === "c".repeat(40) ? json({ sha: match[2], tree: { sha: TREE } }) : json({}, 404);
+      }
       if ((match = path.match(/^\/compare\/(.+)\.\.\.(.+)$/))) {
         const resolve = (value: string) => {
           if (value === "main") return this.currentSha;
@@ -188,10 +214,12 @@ class Repository {
         return json([{ sha, commit: { message: "chore: record an offline selected release" } }]);
       }
       if (path === "/pulls") {
-        if (url.searchParams.get("state") === "open") return json(this.proposal ? [this.proposal.pull] : []);
-        return json((this.listed ?? this.selections).map((entry) => this.pull(entry, true)));
+        if (url.searchParams.get("state") === "open") return paginate(this.proposal ? [this.proposal.pull] : []);
+        const selections = [...(this.listed ?? this.selections)];
+        if (url.searchParams.get("direction") !== "asc") selections.reverse();
+        return paginate(selections.map((entry) => this.pull(entry, true)));
       }
-      if ((match = path.match(/^\/commits\/([0-9a-f]{40})\/pulls$/))) return json(this.selections.filter((entry) => entry.sha === match![1]).map((entry) => this.pull(entry, true)));
+      if ((match = path.match(/^\/commits\/([0-9a-f]{40})\/pulls$/))) return paginate(this.selections.filter((entry) => entry.sha === match![1]).map((entry) => this.pull(entry, true)));
       if ((match = path.match(/^\/pulls\/(\d+)(?:\/(files))?$/))) {
         const selection = this.selections.find((entry) => entry.number === Number(match![1]));
         const pull = selection ? this.pull(selection) : this.proposal?.pull.number === Number(match[1]) ? this.proposal.pull : undefined;
@@ -200,7 +228,8 @@ class Repository {
       }
       if (path.startsWith("/contents/")) {
         const ref = url.searchParams.get("ref") ?? this.currentSha;
-        const source = this.proposal && ["release/calver", this.proposal.headSha].includes(ref) ? this.proposal.files : this.contents.get(ref);
+        const head = this.selections.find((_entry, index) => (80_000 + index).toString(16).padStart(40, "0") === ref);
+        const source = this.proposal && ["release/calver", this.proposal.headSha].includes(ref) ? this.proposal.files : this.contents.get(head?.sha ?? ref);
         const content = source?.[path.slice("/contents/".length)];
         return content === undefined ? json({}, 404) : json({ type: "file", encoding: "base64", content: Buffer.from(content).toString("base64") });
       }
@@ -443,6 +472,112 @@ describe("occupied-slot progress and pinned UTC publication boundary", () => {
   });
 });
 
+async function lightweightSelection() {
+  const repo = new Repository();
+  const owner = repo.add();
+  const tag = "v2026.1030.0";
+  const ref = { ref: `refs/tags/${tag}`, object: { type: "commit", sha: owner.sha } };
+  repo.refs.set(tag, ref);
+  const selected = repo.add();
+  selected.version = "2026.1030.0";
+  selected.tag = tag;
+  repo.contents.set(selected.sha, files(selected.version));
+  expect(await repo.actual.ref(tag)).toMatchObject({ sha: owner.sha, annotation: null });
+  const available = await repo.actual.plan({ channel: "stable", policy: "direct-release", sha: selected.sha, operation: `kagi/release/${selected.sha}` });
+  expect(available.version).toBe("2026.1030.1");
+  return { repo, owner, selected, ref: structuredClone(ref) };
+}
+
+// A lightweight tag reserves a slot but proves no operation identity. It must
+// neither settle a different selection nor poison later reconciliation. The
+// same-SHA ambiguous case and coherent operation/SHA conflicts still refuse.
+describe("lightweight occupied slots are inventory, not settlement", () => {
+  it("refreshes selected current B around an unrelated lightweight slot without replacing A's tag", async () => {
+    const { repo, selected, ref } = await lightweightSelection();
+    repo.listed = [];
+    repo.resetCounts();
+    let result: Awaited<ReturnType<Repository["invoke"]>> | undefined;
+    let refusal: unknown;
+    try { result = await repo.invoke(selected.sha); } catch (error) { refusal = error; }
+    expect.soft(refusal, `unrelated lightweight inventory must reach shared allocation; plans=${repo.planCalls}, GETs=${repo.gets}`).toBeUndefined();
+    expect.soft(repo.planned.map((plan) => ({ sha: plan.sha, version: plan.version }))).toEqual([{ sha: selected.sha, version: "2026.1030.1" }]);
+    expect.soft(result).toMatchObject({ status: "version-pr", version: "2026.1030.1", number: 200, headSha: "d".repeat(40) });
+    expect.soft(repo.proposal?.pull).toMatchObject({ state: "open", draft: false, labels: [{ name: "calver:release" }], head: { ref: "release/calver" }, base: { ref: "main" } });
+    expect.soft(JSON.parse(repo.proposal?.files["package.json"] ?? "{}").version).toBe("2026.1030.1");
+    const lock = JSON.parse(repo.proposal?.files["package-lock.json"] ?? "{}");
+    expect.soft(lock.version).toBe("2026.1030.1");
+    expect.soft(lock.packages?.[""].version).toBe("2026.1030.1");
+    expect.soft(repo.proposal?.files["CHANGELOG.md"]).toContain("## 2026.1030.1");
+    for (const workflow of ["ci.yml", "pr-lint.yml", "secret-scan.yml"]) {
+      expect.soft(repo.calls.filter((call) => call.method === "POST" && call.path === `/actions/workflows/${workflow}/dispatches`).map((call) => call.body.ref)).toEqual(["release/calver"]);
+    }
+    expect(repo.publishCalls).toBe(0);
+    expect(publicationMutations(repo)).toEqual([]);
+    expect(repo.deploys).toEqual([]);
+    expect(repo.refs.get("v2026.1030.0")).toEqual(ref);
+    expect(repo.releases.size).toBe(0);
+  });
+
+  it("does not let older lightweight-slot B block the eligible selected current C", async () => {
+    const { repo, selected: collision, ref } = await lightweightSelection();
+    const current = repo.add();
+    await repo.plan(current);
+    expect(current.version).toBe("2026.1030.1");
+    repo.listed = [collision];
+    repo.resetCounts();
+    let refusal: unknown;
+    try { await repo.invoke(current.sha); } catch (error) { refusal = error; }
+    expect.soft(refusal, "lightweight history is neither B's settlement nor a reason to lose C's callback").toBeUndefined();
+    expect.soft(repo.publications.filter((entry) => entry.created).map((entry) => ({ sha: entry.sha, tag: entry.tag }))).toEqual([{ sha: current.sha, tag: "v2026.1030.1" }]);
+    expect.soft(repo.deploys.map((call) => call.body)).toEqual([{ ref: "main", inputs: { tag: "v2026.1030.1" } }]);
+    expect(repo.publications.some((entry) => entry.sha === collision.sha)).toBe(false);
+    expect(repo.refs.get("v2026.1030.0")).toEqual(ref);
+    expect(repo.calls.some((call) => call.path === `/pulls/${collision.number}`)).toBe(true);
+  });
+
+  it("refuses same-SHA lightweight identity instead of treating an occupied name as an exact replay", async () => {
+    const repo = new Repository();
+    const current = repo.add();
+    await repo.plan(current);
+    const ref = { ref: `refs/tags/${current.tag}`, object: { type: "commit", sha: current.sha } };
+    repo.refs.set(current.tag, ref);
+    repo.listed = [];
+    repo.resetCounts();
+    await expect(repo.invoke()).rejects.toThrow(/provenance|operation|identity|lightweight|annotat|repair|collision/i);
+    expect(repo.writes).toEqual([]);
+    expect(repo.deploys).toEqual([]);
+    expect(repo.refs.get(current.tag)).toEqual(ref);
+  });
+
+  it("refuses coherent same-operation/wrong-SHA evidence rather than refreshing away the conflict", async () => {
+    const repo = new Repository();
+    const owner = repo.add();
+    const selected = repo.add();
+    const plan = await repo.plan(owner, `kagi/release/${selected.sha}`);
+    await repo.actual.publish(plan);
+    selected.version = plan.version;
+    selected.tag = plan.tag;
+    repo.contents.set(selected.sha, files(selected.version));
+    repo.listed = [];
+    repo.resetCounts();
+    await expect(repo.invoke(selected.sha)).rejects.toThrow(/SHA|operation|provenance|collision/i);
+    expect(repo.writes).toEqual([]);
+    expect(repo.deploys).toEqual([]);
+    expect((await repo.actual.ref(plan.tag))?.sha).toBe(owner.sha);
+  });
+
+  it("propagates a lightweight tag lookup error instead of assuming an empty slot", async () => {
+    const { repo, ref } = await lightweightSelection();
+    repo.listed = [];
+    repo.forced.set("GET /git/ref/tags/v2026.1030.0", 503);
+    repo.resetCounts();
+    await expect(repo.invoke()).rejects.toThrow(/HTTP 503/);
+    expect(repo.writes).toEqual([]);
+    expect(repo.deploys).toEqual([]);
+    expect(repo.refs.get("v2026.1030.0")).toEqual(ref);
+  });
+});
+
 async function measured(settled: number, filler: number) {
   const repo = new Repository();
   await repo.seed(settled, filler);
@@ -452,6 +587,57 @@ async function measured(settled: number, filler: number) {
   await repo.invoke();
   return { repo, current, gets: repo.gets, plans: repo.planCalls, publishes: repo.publishCalls };
 }
+
+// Default GITHUB_TOKEN: 1,000 REST requests/repository/hour, without assuming
+// the Enterprise exception. Count all invocation GETs, including shared reads;
+// seeding is actual-engine setup, not a hidden production checkpoint.
+// https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#primary-rate-limit-for-github_token-in-github-actions
+// Paginated provider lists include terminal prev/first Links without a next Link.
+describe("retained history fits the default repository-token read allowance", () => {
+  it.each([
+    ["counted without a provider cutoff", Number.POSITIVE_INFINITY],
+    ["with the default 1,000-read provider cutoff", 1_000],
+  ] as const)("reconciles 112 settled selections and publishes current below 950 GETs: %s", async (_mode, limit) => {
+    const repo = new Repository();
+    await repo.seed(112);
+    expect(repo.releases.size).toBe(112);
+    const current = repo.add();
+    await repo.plan(current);
+    expect(current.version).toBe("2026.1030.112");
+    repo.resetCounts();
+    repo.getLimit = limit;
+    let result: Awaited<ReturnType<Repository["invoke"]>> | undefined;
+    let refusal: unknown;
+    try { result = await repo.invoke(); } catch (error) { refusal = error; }
+    const diagnostic = `GETs=${repo.gets}, plans=${repo.planCalls}, publishes=${repo.publishCalls}, currentDetailFetched=${repo.calls.some((call) => call.path === `/pulls/${current.number}`)}, refusal=${refusal instanceof Error ? refusal.message : String(refusal)}`;
+    expect.soft(refusal, `retained history must leave room for current work; ${diagnostic}`).toBeUndefined();
+    expect.soft(repo.gets, `the total includes caller and real shared-engine requests; ${diagnostic}`).toBeLessThan(950);
+    expect.soft(result).toMatchObject({ status: "published", sha: current.sha, tag: "v2026.1030.112", deploymentDispatched: true });
+    expect.soft(repo.publications.filter((entry) => entry.created).map((entry) => entry.sha)).toEqual([current.sha]);
+    expect.soft(repo.deploys.map((call) => call.body)).toEqual([{ ref: "main", inputs: { tag: "v2026.1030.112" } }]);
+    expect.soft(repo.releases.size).toBe(113);
+    expect(repo.planCalls).toBeLessThanOrEqual(1);
+    expect(repo.publishCalls).toBe(1);
+    expect(repo.calls.some((call) => call.path === "/pulls" && call.query.get("state") === "closed" && Number(call.query.get("page") ?? 1) > 1)).toBe(true);
+    expect(repo.calls.some((call) => call.path === "/tags" && Number(call.query.get("page") ?? 1) > 1)).toBe(true);
+  }, 30_000);
+
+  it("does not drop an oldest repair-required selection beyond the first 100 recent closed-PR rows", async () => {
+    const repo = new Repository();
+    await repo.seed(112);
+    const oldest = repo.selections[0];
+    repo.releases.delete(oldest.tag);
+    const current = repo.add();
+    await repo.plan(current);
+    repo.resetCounts();
+    await expect(repo.invoke()).rejects.toThrow(/repair|Release/i);
+    expect(repo.calls.some((call) => call.path === "/pulls" && Number(call.query.get("page") ?? 1) > 1)).toBe(true);
+    expect(repo.calls.some((call) => call.path === `/releases/tags/${oldest.tag}`)).toBe(true);
+    expect(repo.writes).toEqual([]);
+    expect(repo.deploys).toEqual([]);
+    expect(repo.releases.has(oldest.tag)).toBe(false);
+  }, 30_000);
+});
 
 describe("provenance-bound settlement with the real pinned shared engine", () => {
   it("does not republish or redeploy A after B when A's automatic CI callback arrives late", async () => {

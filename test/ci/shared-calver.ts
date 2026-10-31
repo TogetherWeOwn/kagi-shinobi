@@ -91,6 +91,26 @@ export function validatePlanFixture(plan: SharedPlan): void {
   new Releaser({ api, repository: plan.repository, now: () => new Date("2026-10-30T12:00:00Z") }).validatePlan(plan);
 }
 
+// Caller-generated commit fixture, separate from the immutable shared engine.
+// Its durable marker is checked against an actual offline generator invocation;
+// it supplies input evidence, never an allocator or an always-successful gate.
+export interface GeneratedProposalCommit {
+  sha: string;
+  message: string;
+  tree: { sha: string };
+  parents: Array<{ sha: string }>;
+  author: { name: string; email: string; date?: string };
+  committer: { name: string; email: string; date?: string };
+}
+export function proposalCommitFixture(sha: string, baseSha: string, treeSha: string, version: string, date = "2026-10-30T06:01:00Z"): GeneratedProposalCommit {
+  const author = { name: "github-actions[bot]", email: "41898282+github-actions[bot]@users.noreply.github.com", date };
+  return {
+    sha,
+    message: `chore: release ${version}\n\ncalver-proposal-v1\n${JSON.stringify({ repository: "TogetherWeOwn/kagi-shinobi", baseSha, treeSha, version })}`,
+    tree: { sha: treeSha }, parents: [{ sha: baseSha }], author, committer: { ...author },
+  };
+}
+
 export function disposePinnedCalver(): void {
   if (directory) rmSync(directory, { recursive: true, force: true });
   directory = undefined;
