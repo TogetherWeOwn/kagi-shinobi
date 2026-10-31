@@ -4,10 +4,10 @@
 // gate alone cannot show:
 //   1. the gate's decisions, in both modes, against a stubbed GitHub API;
 //   2. that the workflows are WIRED to it — `deploy` needs `guard`, deploys the
-//      SHA the guard approved, and the release-please caller grants the
+//      SHA the guard approved, and the release caller preserves the
 //      `actions: read` the guard needs. Delete any of those and the gate is
 //      decoration, with every test in (1) still green.
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
@@ -537,12 +537,25 @@ describe("workflow wiring", () => {
     expect(deploy.match(/\n {2}[a-z-]+:\n/g)?.map((s) => s.trim())).toEqual(["guard:", "deploy:"]);
   });
 
-  it("release-please grants the called workflow actions: read", () => {
-    const rp = read("release-please.yml");
-    const call = rp.slice(rp.indexOf("\n  deploy:\n"));
-    expect(call).toMatch(/permissions:\n {6}contents: read\n {6}actions: read\n/);
-    expect(call).toMatch(/uses: \.\/\.github\/workflows\/deploy\.yml/);
-    // No `secrets: inherit` — the Cloudflare secrets stay behind the environment.
-    expect(call).not.toMatch(/^\s*secrets:\s*inherit/m);
+  it("the release caller preserves the guard's Actions access and secret boundary", () => {
+    const dir = fileURLToPath(new URL("../../.github/workflows/", import.meta.url).href);
+    const adapter = readdirSync(dir).filter((name) => /\.ya?ml$/.test(name)).map(read)
+      .find((text) => /\bnode\b[^\n]*\bci\/calver\.ts\b/.test(text));
+    if (adapter) {
+      // The CalVer adapter dispatches the EXISTING workflow instead of calling
+      // it as a reusable job. Dispatch needs actions:write; the guard still
+      // independently runs with exactly its old read permissions.
+      expect(adapter).toMatch(/actions:\s*write/);
+      expect(adapter).not.toMatch(/^\s*secrets:\s*inherit/m);
+      expect(jobBlock("guard")).toMatch(/permissions:\n {6}contents: read\n {6}actions: read\n/);
+      expect(deploy).toMatch(/^ {2}workflow_dispatch:/m);
+    } else {
+      // Keep the old caller assertion until the migration replaces it.
+      const rp = read("release-please.yml");
+      const call = rp.slice(rp.indexOf("\n  deploy:\n"));
+      expect(call).toMatch(/permissions:\n {6}contents: read\n {6}actions: read\n/);
+      expect(call).toMatch(/uses: \.\/\.github\/workflows\/deploy\.yml/);
+      expect(call).not.toMatch(/^\s*secrets:\s*inherit/m);
+    }
   });
 });
