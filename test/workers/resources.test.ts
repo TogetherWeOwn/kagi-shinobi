@@ -130,7 +130,8 @@ describe("kagi://budget", () => {
 
     const body = await read("kagi_budget", { METER: brokenMeter });
 
-    expect(body.error).toMatch(/unreachable/);
+    // Untyped diagnostics never reach a client-visible payload.
+    expect(body.error).toBe("Internal error");
   });
 });
 
@@ -162,7 +163,7 @@ describe("kagi://cache-stats", () => {
 
     const body = await read("kagi_cache_stats", { RESULT_CACHE: brokenCache });
 
-    expect(body.error).toMatch(/unreachable/);
+    expect(body.error).toBe("Internal error");
   });
 });
 
@@ -269,6 +270,6 @@ describe("kagi://smallweb/recent", () => {
 
     const body = await read("kagi_smallweb_recent");
 
-    expect(body.error).toBe("network down");
+    expect(body.error).toBe("Internal error");
   });
 });

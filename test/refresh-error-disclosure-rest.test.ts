@@ -208,14 +208,16 @@ describe("POST /search per-query error text", () => {
 });
 
 describe("controls that must keep passing", () => {
-  it("keeps the missing-credential hint in the 503 body", async () => {
+  it("returns the closed 503 vocabulary for a missing credential", async () => {
     const res = await summarize(
       refreshableEnv({ KAGI_EMAIL: undefined as unknown as string }),
     );
 
     expect(res.status).toBe(503);
     const body = await res.text();
-    expect(body).toContain("KAGI_EMAIL/KAGI_PASSWORD not set");
+    // ADR 0021: REST masks not_configured to the closed phrase; the
+    // credential detail stays server-side.
+    expect(body).toContain("Service not configured");
     expect(body).not.toContain(SYNTH_PASSWORD);
   });
 
