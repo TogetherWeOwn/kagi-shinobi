@@ -1,7 +1,11 @@
+// refreshTokenViaBrowser's reason/log contract, imported from the public
+// repo's src/token/refresh.test.ts. It originally lived under src/ where no
+// Vitest include glob could reach it, so its four cases never ran; moved
+// here unchanged apart from the import paths.
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { refreshTokenViaBrowser } from "./refresh.js";
-import { saveToken } from "./store.js";
-import type { Env } from "../env.js";
+import { refreshTokenViaBrowser } from "../../src/token/refresh.js";
+import { saveToken } from "../../src/token/store.js";
+import type { Env } from "../../src/env.js";
 
 vi.mock("@cloudflare/puppeteer", () => ({
   default: {
@@ -9,17 +13,17 @@ vi.mock("@cloudflare/puppeteer", () => ({
   },
 }));
 
-vi.mock("../util/log.js", () => ({
+vi.mock("../../src/util/log.js", () => ({
   logInfo: vi.fn(),
   logWarn: vi.fn(),
 }));
 
-vi.mock("./store.js", () => ({
+vi.mock("../../src/token/store.js", () => ({
   saveToken: vi.fn(),
 }));
 
 import puppeteer from "@cloudflare/puppeteer";
-import { logWarn } from "../util/log.js";
+import { logWarn } from "../../src/util/log.js";
 
 const mockedLaunch = vi.mocked(puppeteer.launch);
 const mockedLogWarn = vi.mocked(logWarn);
