@@ -305,7 +305,9 @@ describe("ReadThroughCache", () => {
       store: async () => {},
     };
     const rtc = new ReadThroughCache(stub);
-    const circular: { self?: unknown } = {};
+    const circular: { meta: MetaBlock; self?: unknown } = {
+      meta: { impl: "api", cache_hit: false, elapsed_ms: 0 },
+    };
     circular.self = circular;
     const fetcher = vi.fn(async () => circular);
 
