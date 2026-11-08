@@ -23,6 +23,7 @@ const PIPELINE_RESULT = {
   plan: ["sub one", "sub two"],
   citations: [{ n: 1, title: "T", url: "https://a.example/", snippet: "s" }],
   report_markdown: "# Report",
+  unrecorded_cents: 0,
 };
 
 /** A fresh DO instance per test — run rows are sticky by design. */
