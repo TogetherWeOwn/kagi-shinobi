@@ -356,17 +356,21 @@ async function extractOrSummarize(
     if (await state.isCancelled()) break;
     if (!(await canAfford(state, tracker, "kagi_summarize_url"))) break;
     let urlCost: number | undefined;
+    let detail: string;
     try {
       const resp = await summarizeOne(url);
       results.push({ url, content: resp.summary });
       bookSpend(tracker, resp.meta?.cost_cents);
       urlCost = resp.meta?.cost_cents;
+      detail = `Summarized ${url} via scrape summarizer`;
     } catch (err) {
       // A charge settled before the failure is still booked and is handed
-      // to persistence on the same step as the successful summaries.
+      // to persistence on this step — it must keep urlCost — but the step
+      // text must not claim a summary the run never gathered.
       urlCost = bookChargedFailure(tracker, err);
+      detail = `Summarize failed for ${url}: ${describe(err)}`;
     }
-    await emit("extracting", `Summarized ${url} via scrape summarizer`, urlCost);
+    await emit("extracting", detail, urlCost);
   }
   return results;
 }

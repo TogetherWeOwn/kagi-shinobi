@@ -75,6 +75,7 @@ interface ScenarioOptions {
   failAll?: boolean;
   searchFails?: boolean;
   extractFails?: boolean;
+  summarizeFails?: boolean;
 }
 
 /**
@@ -137,6 +138,7 @@ async function runScenario(opts: ScenarioOptions) {
     }
     if (url.includes("/summarize")) {
       counts.summarize += 1;
+      if (opts.summarizeFails) return new Response("upstream broke", { status: 502 });
       return json({ meta: {}, data: { output: "a summary", tokens: 5 } });
     }
     return json({ meta: {}, data: {} });
@@ -263,6 +265,34 @@ describe("one rejected cost-bearing step write (R4 and analogous sites)", () => 
     expect(result.report_markdown.length).toBeGreaterThan(0);
     expect(counts.extract).toBe(1);
     expect(counts.summarize).toBe(1);
+    expect(retained).toBeCloseTo(dispatchedTotal, 4);
+    expect(emittedTotal).toBeCloseTo(retained, 4);
+  });
+
+  it("a failed paid summarize is not presented as summarized, and its charged debit still lands exactly once", async () => {
+    // A charged summarize that fails after dispatch must not emit the
+    // success detail: the run state would claim a summary that was never
+    // gathered while still billing 30c. The failure step keeps the charged
+    // cost so the debit still reaches the run ledger exactly once.
+    const { result, counts, persisted, emittedTotal, retained, dispatchedTotal } =
+      await runScenario({
+        budgetCents: 100,
+        extractFails: true,
+        summarizeFails: true,
+      });
+
+    expect(counts.extract).toBe(1);
+    expect(counts.summarize).toBe(1);
+    const summarizeStep = persisted.find((s) => s.stage === "extracting" && s.cost === SUMMARIZE_CENTS);
+    expect(summarizeStep).toBeDefined();
+    expect(summarizeStep!.detail).toContain("Summarize failed for ");
+    expect(summarizeStep!.detail).not.toContain("Summarized ");
+    expect(
+      persisted.every(
+        (s) => !(s.stage === "extracting" && s.detail.startsWith(`Summarized ${SOURCE_URL}`)),
+      ),
+    ).toBe(true);
+    expect(result.report_markdown.length).toBeGreaterThan(0);
     expect(retained).toBeCloseTo(dispatchedTotal, 4);
     expect(emittedTotal).toBeCloseTo(retained, 4);
   });
