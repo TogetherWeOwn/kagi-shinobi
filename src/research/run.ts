@@ -13,7 +13,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../env.js";
 import { createKagiClient, type KagiClient } from "../kagi/client.js";
-import { safeErrorMessage } from "../kagi/errors.js";
+import { KagiError, safeErrorMessage } from "../kagi/errors.js";
 import { logError } from "../util/log.js";
 import { runPipeline } from "./pipeline.js";
 import type {
@@ -157,11 +157,20 @@ export class ResearchRun extends DurableObject<Env> {
       const status: ResearchStatus = raw === "cancelled" ? "cancelled" : "failed";
       const stored = status === "cancelled" ? "cancelled" : safeErrorMessage(err);
       if (status === "failed") {
-        // Operators only: bounded diagnostic so a generic stored error is
-        // still actionable in `wrangler tail`. Never crosses to clients.
+        // Operators only: a diagnostic so a generic stored error is still
+        // actionable in `wrangler tail`. Never crosses to clients. The
+        // fields are allowlisted — the raw message is logged only for typed
+        // KagiErrors, whose messages are our own vocabulary; an untyped
+        // Error's message can carry upstream bodies or echoed credentials,
+        // so for those we log the error class (e.g. "TypeError") instead.
         logError("research run failed", {
           run_id: initial.run_id,
-          error: raw.slice(0, 200),
+          error:
+            err instanceof KagiError
+              ? raw.slice(0, 200)
+              : err instanceof Error
+                ? err.name
+                : "unknown",
         });
       }
       this.ctx.storage.sql.exec(

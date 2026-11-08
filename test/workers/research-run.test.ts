@@ -202,6 +202,47 @@ describe("pipeline completion", () => {
     }
   });
 
+  it("keeps an untyped error's raw message out of the operator log", async () => {
+    const marker = "synthetic-secret-token-value-0001";
+    mocks.runPipeline.mockRejectedValue(new Error(`fetch failed: echoed ${marker}`));
+    const captured: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      captured.push(args.map(String).join(" "));
+    });
+    const stub = researchStub();
+
+    const { run_id } = await stub.createRun({ question: "q" });
+    await settle();
+    spy.mockRestore();
+
+    const lines = captured.filter((l) => l.includes("research run failed"));
+    expect(lines.length).toBe(1);
+    expect(lines[0]).toContain(run_id);
+    expect(lines[0]).not.toContain(marker);
+    expect(lines[0]).toContain('"Error"');
+    const state = await stub.getOutput(run_id);
+    expect(state?.status).toBe("failed");
+  });
+
+  it("logs the typed error's own message to operators", async () => {
+    mocks.runPipeline.mockRejectedValue(
+      new KagiNotConfiguredError("No Kagi credentials configured"),
+    );
+    const captured: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      captured.push(args.map(String).join(" "));
+    });
+    const stub = researchStub();
+
+    await stub.createRun({ question: "q" });
+    await settle();
+    spy.mockRestore();
+
+    const lines = captured.filter((l) => l.includes("research run failed"));
+    expect(lines.length).toBe(1);
+    expect(lines[0]).toContain("No Kagi credentials configured");
+  });
+
   it("preserves an intentional typed setup error verbatim", async () => {
     mocks.runPipeline.mockRejectedValue(
       new KagiNotConfiguredError("No Kagi credentials configured"),

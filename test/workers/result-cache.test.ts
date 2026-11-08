@@ -294,6 +294,49 @@ describe("ReadThroughCache", () => {
     expect(again).toMatchObject({ n: 2, meta: { cache_hit: false } });
   });
 
+  it("returns a settled paid response whose serialisation fails and releases the claim", async () => {
+    const released: string[] = [];
+    const stub: CacheStub = {
+      acquire: async (): Promise<AcquireResult> => ({ status: "claimed" }),
+      recordHit: async () => {},
+      release: async (key: string) => {
+        released.push(key);
+      },
+      store: async () => {},
+    };
+    const rtc = new ReadThroughCache(stub);
+    const circular: { self?: unknown } = {};
+    circular.self = circular;
+    const fetcher = vi.fn(async () => circular);
+
+    const value = await rtc.readThrough("search", "kagi", { q: uniq("circular") }, fetcher);
+
+    expect(value).toBe(circular);
+    expect(released).toHaveLength(1);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("still returns the paid response when post-settlement cache bookkeeping throws", async () => {
+    const released: string[] = [];
+    const stub: CacheStub = {
+      acquire: async (): Promise<AcquireResult> => ({ status: "claimed" }),
+      recordHit: async () => {},
+      release: async (key: string) => {
+        released.push(key);
+      },
+      store: async () => {
+        throw new Error("Durable Object write failed");
+      },
+    };
+    const rtc = new ReadThroughCache(stub);
+    const fetcher = counter(uniq("store-fail"));
+
+    const value = await rtc.readThrough("search", "kagi", { q: uniq("bookkeeping") }, fetcher);
+
+    expect(value.n).toBe(1);
+    expect(released).toHaveLength(1);
+  });
+
   it(`does not store a body over ${MAX_STORED_BYTES} bytes`, async () => {
     const { rtc } = rt("rt-oversize");
     const q = uniq("oversize");
