@@ -9,6 +9,7 @@ import { KagiApiClient } from "./client.js";
 import { guardBillable } from "./cost.js";
 import type { V1SearchData, V1SearchItem, V1SearchRequest } from "./types.js";
 import { buildMeta } from "../../mcp/meta.js";
+import { withChargedCost } from "../errors.js";
 import type { SearchBuckets, SearchResponse, SearchResult } from "../types.js";
 import { domainFromUrl } from "../../util/url.js";
 
@@ -23,14 +24,21 @@ export async function apiSearch(
 ): Promise<SearchResponse> {
   const start_ms = Date.now();
   const guard = await guardBillable(env, CENTS_PER_CALL);
-  const client = new KagiApiClient(env);
-  const wire = await client.request<V1SearchData>({
-    method: "POST",
-    url: SEARCH_URL,
-    body: req,
-  });
-  await guard.settle(CENTS_PER_CALL);
-  return normalize(req.query, wire.data, wire.trace_id, start_ms);
+  // Past the guard the projected charge is reserved; any throw from here —
+  // dispatch, decode or normalization — must carry it so budget-keeping
+  // callers book the debit (see withChargedCost).
+  try {
+    const client = new KagiApiClient(env);
+    const wire = await client.request<V1SearchData>({
+      method: "POST",
+      url: SEARCH_URL,
+      body: req,
+    });
+    await guard.settle(CENTS_PER_CALL);
+    return normalize(req.query, wire.data, wire.trace_id, start_ms);
+  } catch (err) {
+    throw withChargedCost(err, CENTS_PER_CALL);
+  }
 }
 
 function normalize(

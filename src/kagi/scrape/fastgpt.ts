@@ -23,6 +23,7 @@ import {
   KagiCaptchaError,
   KagiParseError,
   KagiUpstreamError,
+  upstreamErrorFromResponse,
 } from "../errors.js";
 import type { FastGPTReference, FastGPTResponse } from "../types.js";
 
@@ -52,7 +53,7 @@ export async function scrapeFastGPT(
   });
 
   if (res.status === 401 || res.status === 403) throw new KagiAuthError();
-  if (!res.ok) throw new KagiUpstreamError(res.status, res.statusText);
+  if (!res.ok) throw upstreamErrorFromResponse(res.status);
 
   const body = await res.text();
   const finalPayload = parseSseFinalPayload(body);
@@ -162,15 +163,7 @@ export function extractAnswerAndReferences(
   if (references.length === 0) {
     $("a[href^='http']").each((_, el) => {
       const href = $(el).attr("href") ?? "";
-      let url: URL;
-      try {
-        url = new URL(href);
-      } catch {
-        return;
-      }
-      if (url.protocol !== "http:" && url.protocol !== "https:") return;
-      const hostname = url.hostname.replace(/\.$/, "");
-      if (hostname === "kagi.com" || hostname.endsWith(".kagi.com")) return;
+      if (isKagiInternalLink(href)) return;
       pushRef($, el, references, seen);
     });
   }
@@ -185,6 +178,19 @@ export function extractAnswerAndReferences(
     answer: answerText || `(FastGPT returned no answer text for "${query}")`,
     references,
   };
+}
+
+/**
+ * True for links served by Kagi itself — navigation, not citations. Matched
+ * on the parsed hostname so lookalikes like https://kagi.com.evil.example/
+ * are still treated as external references.
+ */
+function isKagiInternalLink(href: string): boolean {
+  try {
+    return new URL(href).hostname.toLowerCase() === "kagi.com";
+  } catch {
+    return false;
+  }
 }
 
 function pushRef(
