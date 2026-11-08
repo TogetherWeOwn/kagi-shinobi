@@ -343,6 +343,35 @@ describe("ReadThroughCache", () => {
     expect(released).toHaveLength(1);
   });
 
+  it("still refreshes L1 and releases the claim when a claimed store write fails", async () => {
+    // Same key for the claimed fetch and the subsequent read: a failed L2
+    // store has no row to serve, but the fresher body the paid fetch settled
+    // must still reach L1 — otherwise this caller keeps serving the older
+    // entry, or pays again when there was none.
+    const released: string[] = [];
+    const stub: CacheStub = {
+      acquire: async (): Promise<AcquireResult> => ({ status: "claimed" }),
+      recordHit: async () => {},
+      release: async (key: string) => {
+        released.push(key);
+      },
+      store: async () => {
+        throw new Error("Durable Object write failed");
+      },
+    };
+    const rtc = new ReadThroughCache(stub);
+    const q = uniq("claimed-store-fail");
+    const fetcher = counter(q, { cost_cents: 1.5 });
+
+    const first = await rtc.readThrough("search", "kagi", { q }, fetcher);
+    const after = await rtc.readThrough("search", "kagi", { q }, fetcher);
+
+    expect(first).toMatchObject({ n: 1, meta: { cache_hit: false, cost_cents: 1.5 } });
+    expect(after).toMatchObject({ n: 1, meta: { cache_hit: true, cost_cents: 0 } });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(released).toHaveLength(1);
+  });
+
   it("still refreshes L1 with a bypass fetch whose L2 store fails", async () => {
     const released: string[] = [];
     const stub: CacheStub = {

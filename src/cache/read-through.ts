@@ -160,16 +160,17 @@ export class ReadThroughCache {
     }
     const fetchedAt = this.now();
     // Awaited, not backgrounded: pollers are waiting on exactly this row. A
-    // failed write leaves the row absent, so the claim must go the same way —
-    // otherwise the next caller polls out the remainder of the lease before
-    // refetching a response that was already paid for. An unclaimed bypass
-    // has no claim to free, but the fresher body it fetched still belongs in
-    // L1; skipping it would keep the prior L1 entry eligible until its TTL.
+    // failed write leaves the row absent, so a held claim must still be
+    // released — otherwise the next caller polls out the remainder of the
+    // lease before refetching a response that was already paid for. Either
+    // way the fresher body still belongs in L1: skipping that write would
+    // keep a prior L1 entry eligible until its TTL, or leave nothing for
+    // the next caller at all.
     try {
       await stub.store(key, domain, body, fetchedAt);
     } catch {
       if (claimed) await swallow(stub.release(key));
-      else await this.background(this.l1Put(key, domain, body, fetchedAt));
+      await this.background(this.l1Put(key, domain, body, fetchedAt));
       return;
     }
     await this.background(this.l1Put(key, domain, body, fetchedAt));
