@@ -23,7 +23,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { KagiClient } from "../../src/kagi/client";
 import { readSpend } from "../../src/kagi/api/cost";
-import { runPipeline } from "../../src/research/pipeline";
+import { runPipeline, unrecordedCentsOf } from "../../src/research/pipeline";
 import type { StateAccessors, StepEmit } from "../../src/research/pipeline";
 import type { ResearchRunState } from "../../src/research/types";
 import { makeEnv, restoreFetch, stubFetch } from "../_helpers";
@@ -245,12 +245,12 @@ describe("one rejected cost-bearing step write (R4 and analogous sites)", () => 
     expect(emittedTotal).toBeCloseTo(retained, 4);
   });
 
-  it("rejected summarize-fallback aggregate write still books the 30c summarize debit exactly once", async () => {
-    // Reaching a paid summarize aggregate: extract genuinely fails after
-    // dispatch (its own 0.4c failure write is healthy), then the fallback
-    // summarizes the one URL for 30c. The aggregate "Summarized ..." write
-    // carrying that 30c is the one that rejects. Budget 100c so the 30c
-    // fallback is affordable after plan + search + failed extract.
+  it("rejected summarize write still books the 30c summarize debit exactly once", async () => {
+    // Reaching a paid summarize: extract genuinely fails after dispatch
+    // (its own 0.4c failure write is healthy), then the fallback summarizes
+    // the one URL for 30c. The "Summarized ..." write carrying that 30c is
+    // the one that rejects. Budget 100c so the 30c fallback is affordable
+    // after plan + search + failed extract.
     const { result, counts, emittedTotal, retained, dispatchedTotal, failedAttempts } =
       await runScenario({
         budgetCents: 100,
@@ -304,6 +304,143 @@ describe("total persistence failure (every write rejects)", () => {
     expect(retained).toBeCloseTo(dispatchedTotal, 4);
     expect(retained).toBeCloseTo(result.unrecorded_cents, 4);
     expect(counts.search).toBe(1);
+  });
+});
+
+describe("exceptional completion still surfaces the residual debit", () => {
+  it("a cancelled exit carries undelivered spend on the thrown error", async () => {
+    // Planning settles 1.5c, its cost-bearing write and retry reject,
+    // cancellation is observed at the next stage, and both final-flush
+    // attempts also reject. The thrown error must carry the residual debit
+    // so the caller's terminal cancelled write can fold it in — a result
+    // object cannot ride an exception.
+    const counts = { fastgpt: 0 };
+    let cancelChecks = 0;
+    const emit = (async () => {
+      throw new Error("synthetic persistence failure");
+    }) as StepEmit;
+    const accessors: StateAccessors = {
+      isCancelled: async () => ++cancelChecks > 1,
+      spentCents: async () => 0,
+      budgetCents: () => 10,
+      allowApi: () => true,
+    };
+    stubFetch(async (input) => {
+      const url = String(input);
+      if (url.includes("/fastgpt")) {
+        counts.fastgpt += 1;
+        return json({
+          meta: {},
+          data: { output: "1. alpha", tokens: 10, references: [] },
+        });
+      }
+      return json({ meta: {}, data: {} });
+    });
+    const env = makeEnv({
+      KAGI_MODE: "api",
+      KAGI_API_KEY: "synthetic-key",
+      MAX_API_CENTS_PER_MONTH: "10000",
+    });
+
+    const thrown = await runPipeline(
+      new KagiClient(env),
+      makeState(),
+      emit,
+      accessors,
+    ).then(
+      () => {
+        throw new Error("expected the cancelled exit");
+      },
+      (err: unknown) => err,
+    );
+
+    // The "cancelled" sentinel still reads as cancellation; the tag is
+    // bookkeeping the caller reconciles in its terminal write.
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe("cancelled");
+    const retained = await readSpend(env);
+    expect(retained).toBeCloseTo(FASTGPT_CENTS, 4);
+    expect(counts.fastgpt).toBe(1);
+    expect(unrecordedCentsOf(thrown)).toBeCloseTo(retained, 4);
+  });
+
+  it("a paid summarize whose next state read rejects keeps its settled debit emitted", async () => {
+    // Two URLs, enough budget, extract fails so the paid summarize loop
+    // runs. The first summary settles 30c; before the second dispatch the
+    // cancellation check rejects. The 30c must already be in the run
+    // ledger — not stranded in a loop-local aggregate the reliable emitter
+    // never saw.
+    const persisted: PersistedStep[] = [];
+    const counts = { summarize: 0 };
+    const emit = (async (stage, detail, cost_cents) => {
+      persisted.push({ stage, detail, cost: cost_cents });
+    }) as StepEmit;
+    const accessors: StateAccessors = {
+      isCancelled: async () => {
+        if (counts.summarize > 0) throw new Error("storage read failed");
+        return false;
+      },
+      spentCents: async () => persisted.reduce((sum, s) => sum + (s.cost ?? 0), 0),
+      budgetCents: () => 100,
+      allowApi: () => true,
+    };
+    stubFetch(async (input) => {
+      const url = String(input);
+      if (url.includes("/fastgpt")) {
+        return json({
+          meta: {},
+          data: { output: "1. alpha", tokens: 10, references: [] },
+        });
+      }
+      if (url.includes("/v1/search")) {
+        return json({
+          meta: {},
+          data: {
+            search: [
+              { url: "https://example.invalid/a", title: "A", snippet: "s" },
+              { url: "https://example.invalid/b", title: "B", snippet: "s" },
+            ],
+          },
+        });
+      }
+      if (url.includes("/v1/extract")) {
+        return new Response("upstream broke", { status: 502 });
+      }
+      if (url.includes("/summarize")) {
+        counts.summarize += 1;
+        return json({ meta: {}, data: { output: "a summary", tokens: 5 } });
+      }
+      return json({ meta: {}, data: {} });
+    });
+    const env = makeEnv({
+      KAGI_MODE: "api",
+      KAGI_API_KEY: "synthetic-key",
+      MAX_API_CENTS_PER_MONTH: "10000",
+    });
+
+    const thrown = await runPipeline(
+      new KagiClient(env),
+      makeState(),
+      emit,
+      accessors,
+    ).then(
+      () => {
+        throw new Error("expected the state-read failure");
+      },
+      (err: unknown) => err,
+    );
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe("storage read failed");
+    expect(counts.summarize).toBe(1);
+    const retained = await readSpend(env);
+    const emittedTotal = persisted.reduce((sum, s) => sum + (s.cost ?? 0), 0);
+    // plan 1.5 + search 1.2 + charged extract failure 0.4 + summary 30.
+    expect(retained).toBeCloseTo(FASTGPT_CENTS + SEARCH_CENTS + EXTRACT_CENTS + SUMMARIZE_CENTS, 4);
+    expect(emittedTotal).toBeCloseTo(retained, 4);
+    // Every settled debit reached the ledger, so nothing is left to fold
+    // into the terminal write.
+    expect(unrecordedCentsOf(thrown)).toBe(0);
   });
 });
 

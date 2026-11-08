@@ -16,7 +16,10 @@ const mocks = vi.hoisted(() => ({
   createKagiClient: vi.fn(),
 }));
 
-vi.mock("../../src/research/pipeline.js", () => ({ runPipeline: mocks.runPipeline }));
+vi.mock("../../src/research/pipeline.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/research/pipeline")>()),
+  runPipeline: mocks.runPipeline,
+}));
 vi.mock("../../src/kagi/client.js", () => ({ createKagiClient: mocks.createKagiClient }));
 
 const PIPELINE_RESULT = {
@@ -293,6 +296,36 @@ describe("pipeline completion", () => {
     expect(state?.status).toBe("cancelled");
     expect(state?.error).toBe("cancelled");
   });
+
+  // R4 exceptional completion: when every step write kept rejecting, the
+  // pipeline cannot return its unrecorded_cents on a result object — it
+  // tags the residual onto the thrown error, and the terminal write must
+  // reconcile it exactly once, whichever terminal status applies.
+  for (const [label, message, status, errorText] of [
+    ["cancelled", "cancelled", "cancelled", "cancelled"],
+    ["failed", "synthetic-secret-marker-7f3a exploded", "failed", undefined],
+  ] as const) {
+    it(`folds a thrown run's residual debit into the ${label} terminal write`, async () => {
+      const err = new Error(message);
+      Object.defineProperty(err, "unrecorded_cents", {
+        value: 1.5,
+        enumerable: false,
+        configurable: true,
+      });
+      mocks.runPipeline.mockRejectedValue(err);
+      const stub = researchStub();
+
+      const { run_id } = await stub.createRun({ question: "q" });
+      await settle();
+      const state = await stub.getOutput(run_id);
+
+      expect(state?.status).toBe(status);
+      expect(state?.cost_cents).toBeCloseTo(1.5);
+      if (errorText !== undefined) expect(state?.error).toBe(errorText);
+      // The raw message is diagnostic text, never the stored error.
+      expect(state?.error).not.toContain("synthetic-secret-marker-7f3a");
+    });
+  }
 
   it("builds the Kagi client from the DO's own env", async () => {
     const stub = researchStub();

@@ -15,7 +15,7 @@ import type { Env } from "../env.js";
 import { createKagiClient, type KagiClient } from "../kagi/client.js";
 import { KagiError, safeErrorMessage } from "../kagi/errors.js";
 import { logError } from "../util/log.js";
-import { runPipeline } from "./pipeline.js";
+import { runPipeline, unrecordedCentsOf } from "./pipeline.js";
 import type {
   CreateRunArgs,
   CreateRunResult,
@@ -174,10 +174,16 @@ export class ResearchRun extends DurableObject<Env> {
                 : "unknown",
         });
       }
+      // A pipeline that aborts while its step writes kept rejecting returns
+      // no result object, so the residual debit is tagged onto the thrown
+      // error instead. Fold it into the terminal write exactly once —
+      // unrecorded spend must not die with the exception.
+      const residual = unrecordedCentsOf(err);
       this.ctx.storage.sql.exec(
-        `UPDATE ${TABLE} SET status = ?, error = ?, updated_at = ? WHERE run_id = ?`,
+        `UPDATE ${TABLE} SET status = ?, error = ?, cost_cents = cost_cents + ?, updated_at = ? WHERE run_id = ?`,
         status,
         stored,
+        residual,
         new Date().toISOString(),
         initial.run_id,
       );

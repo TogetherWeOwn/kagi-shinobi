@@ -339,27 +339,35 @@ async function extractOrSummarize(
         totalCost += bookChargedFailure(tracker, s.reason) ?? 0;
       }
     }
-  } else {
-    for (const url of batch) {
-      if (await state.isCancelled()) break;
-      if (!(await canAfford(state, tracker, "kagi_summarize_url"))) break;
-      try {
-        const resp = await summarizeOne(url);
-        results.push({ url, content: resp.summary });
-        bookSpend(tracker, resp.meta?.cost_cents);
-        totalCost += resp.meta?.cost_cents ?? 0;
-      } catch (err) {
-        // Counted in the denominator below; a charge settled before the
-        // failure is still booked (and emitted via totalCost).
-        totalCost += bookChargedFailure(tracker, err) ?? 0;
-      }
-    }
+    await emit(
+      "extracting",
+      `Summarized ${results.length}/${batch.length} URLs via scrape summarizer`,
+      totalCost > 0 ? totalCost : undefined,
+    );
+    return results;
   }
-  await emit(
-    "extracting",
-    `Summarized ${results.length}/${batch.length} URLs via scrape summarizer`,
-    totalCost > 0 ? totalCost : undefined,
-  );
+  // Paid loop: sequential like the paid search loop above, and each settled
+  // or charged-failure debit is handed to reliable persistence immediately
+  // after its own call — before the next cancellation or affordability
+  // check. Aggregating into one write at the end would leave every debit so
+  // far in a local counter if the loop escapes on a throw: neither the
+  // reliable emitter nor the terminal write could ever see it.
+  for (const url of batch) {
+    if (await state.isCancelled()) break;
+    if (!(await canAfford(state, tracker, "kagi_summarize_url"))) break;
+    let urlCost: number | undefined;
+    try {
+      const resp = await summarizeOne(url);
+      results.push({ url, content: resp.summary });
+      bookSpend(tracker, resp.meta?.cost_cents);
+      urlCost = resp.meta?.cost_cents;
+    } catch (err) {
+      // A charge settled before the failure is still booked and is handed
+      // to persistence on the same step as the successful summaries.
+      urlCost = bookChargedFailure(tracker, err);
+    }
+    await emit("extracting", `Summarized ${url} via scrape summarizer`, urlCost);
+  }
   return results;
 }
 
@@ -424,6 +432,49 @@ function describe(err: unknown): string {
 }
 
 /**
+ * Spend the reliable emitter still holds when the pipeline leaves on a
+ * thrown value. A result object cannot ride an exception, so the residual
+ * debit is tagged onto the thrown error the same way `withChargedCost`
+ * tags a dispatched call's charge: non-enumerable, never serialized into
+ * anything client-visible. The caller folds it into its failed/cancelled
+ * terminal write exactly once; read it with `unrecordedCentsOf`.
+ */
+const UNRECORDED_CENTS = "unrecorded_cents";
+
+function tagUnrecordedCents(err: unknown, cents: number): unknown {
+  // A primitive throw is wrapped so it can carry the tag; the wrap keeps
+  // the caller's classification identical because it reads String(err) for
+  // exactly this purpose.
+  const target =
+    err !== null && (typeof err === "object" || typeof err === "function")
+      ? err
+      : new Error(String(err));
+  try {
+    Object.defineProperty(target, UNRECORDED_CENTS, {
+      value: cents,
+      enumerable: false,
+      configurable: true,
+    });
+  } catch {
+    // A frozen thrown value cannot carry the tag; it still propagates
+    // unchanged.
+  }
+  return target;
+}
+
+/**
+ * The residual debit a `runPipeline` rejection still carried, or 0. Reads
+ * the non-enumerable tag set by `tagUnrecordedCents`; anything else —
+ * including an error thrown before any spend or by another layer — has no
+ * tag and folds nothing.
+ */
+export function unrecordedCentsOf(err: unknown): number {
+  if (err === null || (typeof err !== "object" && typeof err !== "function")) return 0;
+  const value = (err as Record<string, unknown>)[UNRECORDED_CENTS];
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/**
  * Run the pipeline against a given state accessor. Emit updates via `emit`.
  * The caller (the DO) is responsible for persistence and cancellation checks.
  */
@@ -440,24 +491,30 @@ export async function runPipeline(
    * Spend still unrecorded after the final flush — every write carrying it
    * rejected. Nonzero only when persistence failed repeatedly; the caller
    * must fold it into the terminal write so a completed run never reports
-   * less than its paid calls retained.
+   * less than its paid calls retained. On a THROWN exit the same residual
+   * rides on the error itself — see `unrecordedCentsOf`.
    */
   unrecorded_cents: number;
 }> {
   // Every step write goes through the reliable wrapper, so a single
   // rejected persistence write cannot abort the run or lose a debit. The
-  // flush runs in `finally`: a cancellation (or any other throw) after a
-  // debit was carried must still discharge it, or the persisted run total
-  // under-reports retained spend on exactly the abort paths. The wrapper
-  // never throws, so the flush cannot mask the original error.
+  // wrapper never throws, so the flush cannot mask the original error.
   const reliable = makeReliableEmit(emit);
   let result: Awaited<ReturnType<typeof runPipelineStages>>;
   try {
     result = await runPipelineStages(client, initial, reliable.emit, state);
-  } finally {
-    // Also discharges a carried debit on the abort paths (cancel/throw).
+  } catch (err) {
+    // Also discharges a carried debit on the abort paths (cancel/throw) —
+    // and whatever the flush still could not deliver must reach the
+    // caller's terminal write, not die inside the wrapper. The original
+    // error's identity, message and type are preserved so the caller's
+    // classification (the "cancelled" sentinel, typed-error messages) is
+    // unchanged; a primitive throw is wrapped in an Error whose message is
+    // the same stringification.
     await reliable.flush();
+    throw tagUnrecordedCents(err, reliable.pending());
   }
+  await reliable.flush();
   // Read pending only after every flush attempt: anything still held here
   // truly never reached storage and must be folded into the terminal write.
   return { ...result, unrecorded_cents: reliable.pending() };
