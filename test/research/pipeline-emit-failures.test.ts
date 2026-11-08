@@ -71,6 +71,8 @@ interface ScenarioOptions {
   budgetCents: number;
   /** Reject the first event matching this predicate, before recording it. */
   failOnceOn?: EmitPredicate;
+  /** Reject every event: retries, carries and the final flush all fail. */
+  failAll?: boolean;
   searchFails?: boolean;
   extractFails?: boolean;
 }
@@ -89,7 +91,7 @@ async function runScenario(opts: ScenarioOptions) {
 
   const emit = (async (stage, detail, cost_cents) => {
     const step: PersistedStep = { stage, detail, cost: cost_cents };
-    if (!alreadyFailed && opts.failOnceOn?.(step)) {
+    if (opts.failAll || (!alreadyFailed && opts.failOnceOn?.(step))) {
       alreadyFailed = true;
       failedAttempts += 1;
       throw new Error("synthetic persistence failure");
@@ -284,6 +286,24 @@ describe("one rejected cost-bearing step write (R4 and analogous sites)", () => 
     expect(counts.summarize).toBe(0);
     expect(retained).toBeCloseTo(dispatchedTotal, 4);
     expect(emittedTotal).toBeCloseTo(retained, 4);
+  });
+});
+
+describe("total persistence failure (every write rejects)", () => {
+  it("returns unrecorded_cents equal to retained spend instead of losing it", async () => {
+    // The R4 contract's outer bound: when retries, carries AND the final
+    // flush all reject, the pipeline must surface the unsettled debit to
+    // the caller (the DO folds it into the terminal write) rather than
+    // letting a `done` row under-report retained spend.
+    const { result, counts, emittedTotal, retained, dispatchedTotal, failedAttempts } =
+      await runScenario({ budgetCents: 10, failAll: true });
+
+    expect(result.report_markdown.length).toBeGreaterThan(0);
+    expect(failedAttempts).toBeGreaterThan(0);
+    expect(emittedTotal).toBe(0);
+    expect(retained).toBeCloseTo(dispatchedTotal, 4);
+    expect(retained).toBeCloseTo(result.unrecorded_cents, 4);
+    expect(counts.search).toBe(1);
   });
 });
 

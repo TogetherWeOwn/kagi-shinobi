@@ -209,7 +209,7 @@ export function withChargedCost<T>(err: T, cents: number): T {
 }
 
 export function chargedCostCents(err: unknown): number | undefined {
-  if (err === null || typeof err !== "object") return undefined;
+  if (err === null || (typeof err !== "object" && typeof err !== "function")) return undefined;
   const value = (err as { charged_cost_cents?: unknown }).charged_cost_cents;
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? value

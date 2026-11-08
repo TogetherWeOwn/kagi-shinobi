@@ -115,7 +115,13 @@ export class ReadThroughCache {
           await swallow(stub.release(key));
           throw err;
         }
-        await this.persist(stub, key, domain, value, opts, true);
+        try {
+          await this.persist(stub, key, domain, value, opts, true);
+        } catch {
+          // The response already settled its charge; cache bookkeeping is
+          // best-effort and must never drop a paid value. Release the claim.
+          await swallow(stub.release(key));
+        }
         return value;
       }
       // Pending: another caller is fetching. Its lease expiring turns the
@@ -135,7 +141,18 @@ export class ReadThroughCache {
     opts: ReadThroughOptions<T>,
     claimed: boolean,
   ): Promise<void> {
-    const body = JSON.stringify(value);
+    // Serialisation happens AFTER the call settled its charge: a deeply
+    // nested `props` or a throwing toJSON must not reject the fetch that
+    // already succeeded (the caller would lose a paid response and re-admit
+    // the same budget for a retry). Persist is best-effort — treat an
+    // unserialisable value exactly like an unstorable one.
+    let body: string;
+    try {
+      body = JSON.stringify(value);
+    } catch {
+      if (claimed) await swallow(stub.release(key));
+      return;
+    }
     const ok = (opts.storable?.(value) ?? true) && body.length <= MAX_STORED_BYTES;
     if (!ok) {
       if (claimed) await swallow(stub.release(key));

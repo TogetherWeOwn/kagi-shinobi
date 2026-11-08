@@ -14,6 +14,7 @@ import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../env.js";
 import { createKagiClient, type KagiClient } from "../kagi/client.js";
 import { safeErrorMessage } from "../kagi/errors.js";
+import { logError } from "../util/log.js";
 import { runPipeline } from "./pipeline.js";
 import type {
   CreateRunArgs,
@@ -135,11 +136,15 @@ export class ResearchRun extends DurableObject<Env> {
           allowApi: () => initial.allow_api,
         },
       );
+      // Every step write rejected but the terminal write must not mark the
+      // run done while settled charges are unrecorded: fold the debit the
+      // flush could not deliver into the same durable update.
       this.ctx.storage.sql.exec(
-        `UPDATE ${TABLE} SET plan_json = ?, citations_json = ?, report_markdown = ?, status = 'done', updated_at = ? WHERE run_id = ?`,
+        `UPDATE ${TABLE} SET plan_json = ?, citations_json = ?, report_markdown = ?, status = 'done', cost_cents = cost_cents + ?, updated_at = ? WHERE run_id = ?`,
         JSON.stringify(result.plan),
         JSON.stringify(result.citations),
         result.report_markdown,
+        result.unrecorded_cents,
         new Date().toISOString(),
         initial.run_id,
       );
@@ -151,6 +156,14 @@ export class ResearchRun extends DurableObject<Env> {
       const raw = err instanceof Error ? err.message : String(err);
       const status: ResearchStatus = raw === "cancelled" ? "cancelled" : "failed";
       const stored = status === "cancelled" ? "cancelled" : safeErrorMessage(err);
+      if (status === "failed") {
+        // Operators only: bounded diagnostic so a generic stored error is
+        // still actionable in `wrangler tail`. Never crosses to clients.
+        logError("research run failed", {
+          run_id: initial.run_id,
+          error: raw.slice(0, 200),
+        });
+      }
       this.ctx.storage.sql.exec(
         `UPDATE ${TABLE} SET status = ?, error = ?, updated_at = ? WHERE run_id = ?`,
         status,

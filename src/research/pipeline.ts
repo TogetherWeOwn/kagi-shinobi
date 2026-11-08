@@ -39,7 +39,11 @@ export interface StepEmit {
  * spend tracker has already booked the debit either way, so the run budget
  * stays a ceiling while persistence is degraded.
  */
-function makeReliableEmit(emit: StepEmit): { emit: StepEmit; flush: () => Promise<void> } {
+function makeReliableEmit(emit: StepEmit): {
+  emit: StepEmit;
+  flush: () => Promise<void>;
+  pending: () => number;
+} {
   let pendingCents = 0;
   let lastStage: ResearchStatus = "planning";
   const reliable: StepEmit = async (stage, detail, cost_cents) => {
@@ -62,6 +66,7 @@ function makeReliableEmit(emit: StepEmit): { emit: StepEmit; flush: () => Promis
     flush: async () => {
       if (pendingCents > 0) await reliable(lastStage, "Reconciled research spend");
     },
+    pending: () => pendingCents,
   };
 }
 
@@ -255,6 +260,7 @@ async function searchAllSubqueries(
   // these out would let every concurrent sub-query pass the same
   // pre-flight balance and overspend a small budget.
   for (const q of subqueries) {
+    if (await state.isCancelled()) break;
     if (!(await canAfford(state, tracker, "kagi_search_fetch"))) {
       await emit("searching", `Search skipped for "${q}": research budget exhausted`);
       continue;
@@ -335,6 +341,7 @@ async function extractOrSummarize(
     }
   } else {
     for (const url of batch) {
+      if (await state.isCancelled()) break;
       if (!(await canAfford(state, tracker, "kagi_summarize_url"))) break;
       try {
         const resp = await summarizeOne(url);
@@ -429,6 +436,13 @@ export async function runPipeline(
   plan: string[];
   citations: ResearchCitation[];
   report_markdown: string;
+  /**
+   * Spend still unrecorded after the final flush — every write carrying it
+   * rejected. Nonzero only when persistence failed repeatedly; the caller
+   * must fold it into the terminal write so a completed run never reports
+   * less than its paid calls retained.
+   */
+  unrecorded_cents: number;
 }> {
   // Every step write goes through the reliable wrapper, so a single
   // rejected persistence write cannot abort the run or lose a debit. The
@@ -437,11 +451,16 @@ export async function runPipeline(
   // under-reports retained spend on exactly the abort paths. The wrapper
   // never throws, so the flush cannot mask the original error.
   const reliable = makeReliableEmit(emit);
+  let result: Awaited<ReturnType<typeof runPipelineStages>>;
   try {
-    return await runPipelineStages(client, initial, reliable.emit, state);
+    result = await runPipelineStages(client, initial, reliable.emit, state);
   } finally {
+    // Also discharges a carried debit on the abort paths (cancel/throw).
     await reliable.flush();
   }
+  // Read pending only after every flush attempt: anything still held here
+  // truly never reached storage and must be folded into the terminal write.
+  return { ...result, unrecorded_cents: reliable.pending() };
 }
 
 async function runPipelineStages(
