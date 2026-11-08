@@ -435,8 +435,11 @@ describe("exceptional completion still surfaces the residual debit", () => {
     expect(counts.summarize).toBe(1);
     const retained = await readSpend(env);
     const emittedTotal = persisted.reduce((sum, s) => sum + (s.cost ?? 0), 0);
-    // plan 1.5 + search 1.2 + charged extract failure 0.4 + summary 30.
-    expect(retained).toBeCloseTo(FASTGPT_CENTS + SEARCH_CENTS + EXTRACT_CENTS + SUMMARIZE_CENTS, 4);
+    // plan 1.5 + search 1.2 + charged extract failure 0.4/url × 2 + summary 30.
+    expect(retained).toBeCloseTo(
+      FASTGPT_CENTS + SEARCH_CENTS + EXTRACT_CENTS * 2 + SUMMARIZE_CENTS,
+      4,
+    );
     expect(emittedTotal).toBeCloseTo(retained, 4);
     // Every settled debit reached the ledger, so nothing is left to fold
     // into the terminal write.
