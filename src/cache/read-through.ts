@@ -159,8 +159,16 @@ export class ReadThroughCache {
       return;
     }
     const fetchedAt = this.now();
-    // Awaited, not backgrounded: pollers are waiting on exactly this row.
-    await swallow(stub.store(key, domain, body, fetchedAt));
+    // Awaited, not backgrounded: pollers are waiting on exactly this row. A
+    // failed write leaves the row absent, so the claim must go the same way —
+    // otherwise the next caller polls out the remainder of the lease before
+    // refetching a response that was already paid for.
+    try {
+      await stub.store(key, domain, body, fetchedAt);
+    } catch {
+      if (claimed) await swallow(stub.release(key));
+      return;
+    }
     await this.background(this.l1Put(key, domain, body, fetchedAt));
   }
 
