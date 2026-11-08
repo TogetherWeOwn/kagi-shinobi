@@ -219,7 +219,32 @@ describe("pipeline completion", () => {
     expect(lines.length).toBe(1);
     expect(lines[0]).toContain(run_id);
     expect(lines[0]).not.toContain(marker);
-    expect(lines[0]).toContain('"Error"');
+    expect(lines[0]).toContain("untyped error");
+    const state = await stub.getOutput(run_id);
+    expect(state?.status).toBe("failed");
+  });
+
+  it("keeps a secret-bearing Error.name out of the operator log", async () => {
+    const marker = "synthetic-secret-name-token-0002";
+    const err = new Error("plain failure");
+    err.name = marker;
+    mocks.runPipeline.mockRejectedValue(err);
+    const captured: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      captured.push(args.map(String).join(" "));
+    });
+    const stub = researchStub();
+
+    const { run_id } = await stub.createRun({ question: "q" });
+    await settle();
+    spy.mockRestore();
+
+    const lines = captured.filter((l) => l.includes("research run failed"));
+    expect(lines.length).toBe(1);
+    expect(lines[0]).toContain(run_id);
+    expect(lines[0]).toContain("untyped error");
+    expect(lines[0]).not.toContain(marker);
+    expect(lines[0]).not.toContain("plain failure");
     const state = await stub.getOutput(run_id);
     expect(state?.status).toBe("failed");
   });

@@ -160,16 +160,17 @@ export class ResearchRun extends DurableObject<Env> {
         // Operators only: a diagnostic so a generic stored error is still
         // actionable in `wrangler tail`. Never crosses to clients. The
         // fields are allowlisted — the raw message is logged only for typed
-        // KagiErrors, whose messages are our own vocabulary; an untyped
+        // KagiErrors, whose messages are our own vocabulary. An untyped
         // Error's message can carry upstream bodies or echoed credentials,
-        // so for those we log the error class (e.g. "TypeError") instead.
+        // and its name is mutable to the same taint, so for those we log a
+        // fixed label instead.
         logError("research run failed", {
           run_id: initial.run_id,
           error:
             err instanceof KagiError
               ? raw.slice(0, 200)
               : err instanceof Error
-                ? err.name
+                ? "untyped error"
                 : "unknown",
         });
       }
