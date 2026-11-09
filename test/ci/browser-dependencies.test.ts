@@ -49,10 +49,26 @@ function packageName(path: string): string {
   return path.split("node_modules/").at(-1)!;
 }
 
-function pins(input: Lock): Set<string> {
-  return new Set(Object.entries(input.packages).filter(([path]) => path).map(
-    ([path, node]) => `${packageName(path)}@${node.version}:${node.integrity}`,
-  ));
+function assertMigrationPins(before: Lock, after: Lock): void {
+  for (const [path, node] of Object.entries(after.packages)) {
+    if (!path) continue;
+    const old = before.packages[path];
+    if (old?.version === node.version && old.integrity === node.integrity) continue;
+    expect(node.version, `unapproved new pin: ${path}`).toBe(approved[packageName(path)]);
+  }
+  for (const [path, node] of Object.entries(before.packages)) {
+    if (!path) continue;
+    const name = packageName(path);
+    // lru-cache@7 is private to the old proxy-agent; all other lru-cache
+    // versions, shared debug/tslib and platform-optional pins must survive.
+    const removed = orphaned.has(name) || path === "node_modules/proxy-agent/node_modules/lru-cache";
+    const replaced = name === "@cloudflare/puppeteer" || name === "devtools-protocol";
+    if (removed || replaced) continue;
+    expect(after.packages[path], `lost held pin: ${path}@${node.version}`).toMatchObject({
+      version: node.version,
+      integrity: node.integrity,
+    });
+  }
 }
 
 function runtimeFiles(dir: string): string[] {
@@ -98,33 +114,37 @@ describe("qualified worker-only browser dependencies", () => {
     // unbranded copied code or a substitute for npm audit and transport tests.
   });
 
-  it("preserves every unrelated version and integrity during the initial migration", () => {
+  it("rejects losing one identical nested held pin while retaining another", () => {
+    const node = { version: "7.28.5", integrity: "sha512-held" };
+    const root = "node_modules/@babel/parser";
+    const nested = "node_modules/example/node_modules/@babel/parser";
+    const before = { packages: { [root]: node, [nested]: node } };
+    expect(() => assertMigrationPins(before, before)).not.toThrow();
+    expect(() => assertMigrationPins(before, { packages: { [root]: node } })).toThrow(
+      `lost held pin: ${nested}@${node.version}`,
+    );
+  });
+
+  it("rejects changing a held location even if its former pin survives elsewhere", () => {
+    const node = { version: "7.28.5", integrity: "sha512-held" };
+    const root = "node_modules/@babel/parser";
+    const nested = "node_modules/example/node_modules/@babel/parser";
+    const before = { packages: { [root]: node, [nested]: node } };
+    const changed = { packages: { [root]: node, [nested]: { ...node, integrity: "sha512-changed" } } };
+    expect(() => assertMigrationPins(before, changed)).toThrow();
+  });
+
+  it("preserves every unrelated version and integrity during the initial migration", ({ skip }) => {
     const base = process.env.BROWSER_DEPENDENCY_BASE;
     // CI supplies its exact PR base (and fetches history). Outside PR CI the
     // artifact tests above still run, without inventing a comparison baseline.
-    if (!base || /^0+$/.test(base)) return;
+    if (!base || /^0+$/.test(base)) return skip("No PR migration baseline");
     const before = JSON.parse(execFileSync("git", ["show", `${base}:package-lock.json`], {
       encoding: "utf8",
     })) as Lock;
-    if (before.packages["node_modules/@cloudflare/puppeteer"]?.version !== "1.4.0") return;
-    const oldPins = pins(before);
-    const newPins = pins(lock);
-    for (const [path, node] of Object.entries(lock.packages)) {
-      if (!path) continue;
-      const name = packageName(path);
-      if (!oldPins.has(`${name}@${node.version}:${node.integrity}`)) {
-        expect(node.version, `unapproved new pin: ${path}`).toBe(approved[name]);
-      }
+    if (before.packages["node_modules/@cloudflare/puppeteer"]?.version !== "1.4.0") {
+      return skip("PR base is not the initial 1.4 migration");
     }
-    for (const [path, node] of Object.entries(before.packages)) {
-      if (!path) continue;
-      const name = packageName(path);
-      if (newPins.has(`${name}@${node.version}:${node.integrity}`)) continue;
-      // lru-cache@7 is private to the old proxy-agent; all other lru-cache
-      // versions, shared debug/tslib and platform-optional pins must survive.
-      const removed = orphaned.has(name) || path === "node_modules/proxy-agent/node_modules/lru-cache";
-      const replaced = name === "@cloudflare/puppeteer" || name === "devtools-protocol";
-      expect(removed || replaced, `lost held pin: ${path}@${node.version}`).toBe(true);
-    }
+    assertMigrationPins(before, lock);
   });
 });

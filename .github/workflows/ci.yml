@@ -128,7 +128,7 @@ jobs:
       # test` the ratchet never runs and coverage can slide back unnoticed.
       - run: npm run test:coverage
         env:
-          BROWSER_DEPENDENCY_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          BROWSER_DEPENDENCY_BASE: ${{ github.event.pull_request.base.sha }}
       # dry-run catches broken bindings/migrations without deploying.
       - run: npx wrangler deploy --dry-run --outdir qualification-bundle
       # End-to-end: boots a real `wrangler dev` and talks to it over HTTP, so

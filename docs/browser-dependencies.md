@@ -31,6 +31,8 @@ complete advisory inventory, type generation, strict typecheck, both coverage
 projects with unchanged floors, deployment dry-run and request-only E2E. It
 retains the lock, audit JSON, coverage summary and dry-run bundle for seven days.
 No E2E launches a browser, calls Kagi or uses production credentials.
+The complete audit is deliberately fail-closed at every advisory severity, not
+an evidence-only step: any advisory holds qualification before later commands.
 
 - `test/ci/browser-dependencies.test.ts` pins the artifact, checks every lock
   location for the removed installer packages, and scans installed runtime JS for
