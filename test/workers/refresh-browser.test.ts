@@ -381,13 +381,16 @@ describe("per-isolate single flight", () => {
   });
 
   it("clears the in-flight slot so a later call can run again", async () => {
-    const page = fakePage();
-    launch.mockResolvedValue(fakeBrowser(page));
+    const firstBrowser = fakeBrowser(fakePage());
+    const secondBrowser = fakeBrowser(fakePage());
+    launch.mockResolvedValueOnce(firstBrowser).mockResolvedValueOnce(secondBrowser);
 
-    await refreshTokenViaBrowser(refreshableEnv());
+    expect((await refreshTokenViaBrowser(refreshableEnv())).ok).toBe(true);
     // The real Meter lease remains held; force isolates the single-flight slot.
-    await refreshTokenViaBrowser(refreshableEnv(), { force: true });
+    expect((await refreshTokenViaBrowser(refreshableEnv(), { force: true })).ok).toBe(true);
 
     expect(launch).toHaveBeenCalledTimes(2);
+    expect(firstBrowser.close).toHaveBeenCalledTimes(1);
+    expect(secondBrowser.close).toHaveBeenCalledTimes(1);
   });
 });
