@@ -123,6 +123,12 @@ export class ResearchRun extends DurableObject<Env> {
   private async executePipeline(initial: ResearchRunState): Promise<void> {
     const client = createKagiClient(this.env);
     await this.updateStatus(initial.run_id, "planning");
+    // A RESOLVED pipeline returns its residual on the result object, but the
+    // result is scoped to this try — if the terminal `done` write itself
+    // throws, the catch sees only an untagged SQL exception. Hold the settled
+    // residual here so the failed terminal write can still fold it in
+    // exactly once.
+    let settledResidual = 0;
     try {
       const result = await runPipeline(
         client,
@@ -136,6 +142,7 @@ export class ResearchRun extends DurableObject<Env> {
           allowApi: () => initial.allow_api,
         },
       );
+      settledResidual = result.unrecorded_cents;
       // Every step write rejected but the terminal write must not mark the
       // run done while settled charges are unrecorded: fold the debit the
       // flush could not deliver into the same durable update.
@@ -176,9 +183,13 @@ export class ResearchRun extends DurableObject<Env> {
       }
       // A pipeline that aborts while its step writes kept rejecting returns
       // no result object, so the residual debit is tagged onto the thrown
-      // error instead. Fold it into the terminal write exactly once —
-      // unrecorded spend must not die with the exception.
-      const residual = unrecordedCentsOf(err);
+      // error instead. A RESOLVED pipeline's residual already moved into
+      // `settledResidual` — the error here may then be an untagged terminal
+      // write failure. Exactly one source is nonzero per path, and the
+      // `done` write either applied its add or threw before mutating, so
+      // this fold can never double-add. Unrecorded spend must not die with
+      // the exception.
+      const residual = unrecordedCentsOf(err) + settledResidual;
       this.ctx.storage.sql.exec(
         `UPDATE ${TABLE} SET status = ?, error = ?, cost_cents = cost_cents + ?, updated_at = ? WHERE run_id = ?`,
         status,

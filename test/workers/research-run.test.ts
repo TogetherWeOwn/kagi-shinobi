@@ -327,6 +327,47 @@ describe("pipeline completion", () => {
     });
   }
 
+  // Resolved-pipeline residual across a failed terminal write: the pipeline
+  // completes holding 1.5 unrecorded cents, the `done` UPDATE then throws
+  // before mutating (the trigger aborts only `status = 'done'` writes), and
+  // the smaller failed update succeeds. The catch must fold the resolved
+  // result's residual — not just a tag on the thrown error — into the
+  // failed row exactly once, or the spend is lost.
+  it("folds a resolved run's residual into the failed write when the done update throws", async () => {
+    mocks.runPipeline.mockResolvedValue({ ...PIPELINE_RESULT, unrecorded_cents: 1.5 });
+    const stub = researchStub();
+
+    const { run_id } = await runInDurableObject(stub, async (instance, state) => {
+      state.storage.sql.exec(
+        `CREATE TRIGGER fail_done_update BEFORE UPDATE ON runs
+         WHEN NEW.status = 'done'
+         BEGIN SELECT RAISE(ABORT, 'synthetic-done-write-failure'); END`,
+      );
+      return instance.createRun({ question: "q" });
+    });
+    await settle();
+    const state = await stub.getOutput(run_id);
+
+    expect(state?.status).toBe("failed");
+    expect(state?.cost_cents).toBeCloseTo(1.5);
+    // The raw trigger text is diagnostic, never the stored error.
+    expect(state?.error).not.toContain("synthetic-done-write-failure");
+  });
+
+  // Control: with no interference, a resolved residual reaches the done row
+  // exactly once through the success path.
+  it("folds a resolved run's residual into the done write exactly once", async () => {
+    mocks.runPipeline.mockResolvedValue({ ...PIPELINE_RESULT, unrecorded_cents: 1.5 });
+    const stub = researchStub();
+
+    const { run_id } = await stub.createRun({ question: "q" });
+    await settle();
+    const state = await stub.getOutput(run_id);
+
+    expect(state?.status).toBe("done");
+    expect(state?.cost_cents).toBeCloseTo(1.5);
+  });
+
   it("builds the Kagi client from the DO's own env", async () => {
     const stub = researchStub();
 
