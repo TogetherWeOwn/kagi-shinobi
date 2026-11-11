@@ -355,12 +355,13 @@ describe("kagi_search_fetch", () => {
     expect(text(result)).not.toContain("Not Available");
   });
 
-  it("stringifies a non-Error rejection", async () => {
+  it("genericizes a non-Error rejection", async () => {
     const search = vi.fn().mockRejectedValue("just a string");
 
     const result = await call("kagi_search_fetch", { queries: ["q"] }, "scrape", { search });
 
-    expect(text(result)).toContain("just a string");
+    expect(text(result)).toContain("Internal error");
+    expect(text(result)).not.toContain("just a string");
   });
 
   it("passes engine through to the facade", async () => {
@@ -693,7 +694,7 @@ describe("the research trio", () => {
     const result = await call("kagi_research_create_run", { question: "why" });
 
     expect(result.structuredContent?.error_kind).toBe("internal");
-    expect(result.structuredContent?.message).toBe("DO unreachable");
+    expect(result.structuredContent?.message).toBe("Internal error");
   });
 });
 
@@ -868,12 +869,12 @@ describe("kagiErrorMcp", () => {
     expect(result.structuredContent).toMatchObject({ tool: "kagi_extract", mode: "scrape" });
   });
 
-  it("stringifies a thrown non-Error", async () => {
+  it("genericizes a thrown non-Error", async () => {
     const result = await call("kagi_fastgpt", { query: "q" }, "scrape", {
       fastGPT: vi.fn().mockRejectedValue("a bare string"),
     });
 
-    expect(result.structuredContent?.message).toBe("a bare string");
+    expect(result.structuredContent?.message).toBe("Internal error");
   });
 
   // ADR 0012 deleted three per-class branches in kagiErrorMcp on the claim they

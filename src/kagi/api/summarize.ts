@@ -16,7 +16,7 @@ import { guardBillable } from "./cost.js";
 import type { V0SummarizeData, V0SummarizeRequest } from "./types.js";
 import { buildMeta } from "../../mcp/meta.js";
 import type { SummarizeResponse, SummarizerEngine, SummaryStyle } from "../types.js";
-import { KagiConfirmRequiredError, KagiError } from "../errors.js";
+import { KagiConfirmRequiredError, KagiError, KagiParseError, withChargedCost } from "../errors.js";
 
 const SUMMARIZE_URL = "https://kagi.com/api/v0/summarize";
 const CECIL_AGNES_CAP_CENTS = 30;
@@ -61,27 +61,38 @@ export async function apiSummarize(
   if (args.kind === "url") req.url = args.ref;
   else req.text = args.ref;
 
-  const client = new KagiApiClient(env);
-  const wire = await client.request<V0SummarizeData>({
-    method: "POST",
-    url: SUMMARIZE_URL,
-    body: req,
-  });
-  await guard.settle(projected);
-
-  return {
-    source: { kind: args.kind, ref: args.ref },
-    summary: wire.data.output,
-    engine_used: engine,
-    target_language: args.language,
-    tokens: wire.data.tokens,
-    meta: buildMeta({
-      impl: "api",
-      start_ms,
-      cost_cents: projected,
-      trace_id: wire.trace_id,
-    }),
-  };
+  // Past the guard the projected charge is reserved; any throw from here —
+  // dispatch, decode or mapping — must carry it so budget-keeping callers
+  // book the debit (see withChargedCost).
+  try {
+    const client = new KagiApiClient(env);
+    const wire = await client.request<V0SummarizeData>({
+      method: "POST",
+      url: SUMMARIZE_URL,
+      body: req,
+    });
+    await guard.settle(projected);
+    // Same rule as FastGPT: a non-string `output` fails here, inside the
+    // tagged region, rather than escaping as a successful null summary.
+    if (typeof wire.data.output !== "string") {
+      throw new KagiParseError("Summarize response did not include a summary");
+    }
+    return {
+      source: { kind: args.kind, ref: args.ref },
+      summary: wire.data.output,
+      engine_used: engine,
+      target_language: args.language,
+      tokens: wire.data.tokens,
+      meta: buildMeta({
+        impl: "api",
+        start_ms,
+        cost_cents: projected,
+        trace_id: wire.trace_id,
+      }),
+    };
+  } catch (err) {
+    throw withChargedCost(err, projected);
+  }
 }
 
 function pickEngine(engine: SummarizerEngine | undefined): "cecil" | "agnes" | "daphne" | "muriel" {

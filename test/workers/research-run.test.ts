@@ -8,6 +8,7 @@
 
 import { env, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { KagiNotConfiguredError } from "../../src/kagi/errors";
 import { getResearchStub } from "../../src/research/run";
 
 const mocks = vi.hoisted(() => ({
@@ -15,13 +16,17 @@ const mocks = vi.hoisted(() => ({
   createKagiClient: vi.fn(),
 }));
 
-vi.mock("../../src/research/pipeline.js", () => ({ runPipeline: mocks.runPipeline }));
+vi.mock("../../src/research/pipeline.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/research/pipeline")>()),
+  runPipeline: mocks.runPipeline,
+}));
 vi.mock("../../src/kagi/client.js", () => ({ createKagiClient: mocks.createKagiClient }));
 
 const PIPELINE_RESULT = {
   plan: ["sub one", "sub two"],
   citations: [{ n: 1, title: "T", url: "https://a.example/", snippet: "s" }],
   report_markdown: "# Report",
+  unrecorded_cents: 0,
 };
 
 /** A fresh DO instance per test — run rows are sticky by design. */
@@ -151,7 +156,11 @@ describe("pipeline completion", () => {
     expect(state?.error).toBeUndefined();
   });
 
-  it("records the failure message when the pipeline throws", async () => {
+  // The terminal error is stored and later served to clients verbatim by
+  // every readout, so it gets the same treatment as other client-visible
+  // surfaces: typed vocabulary or a fixed generic string — never the raw
+  // untyped message, which can carry upstream text, paths or tokens.
+  it("records a sanitized failure when the pipeline throws", async () => {
     mocks.runPipeline.mockRejectedValue(new Error("upstream exploded"));
     const stub = researchStub();
 
@@ -160,17 +169,120 @@ describe("pipeline completion", () => {
     const state = await stub.getOutput(run_id);
 
     expect(state?.status).toBe("failed");
-    expect(state?.error).toBe("upstream exploded");
+    expect(state?.error).toBeTruthy();
+    expect(state?.error).not.toContain("upstream exploded");
   });
 
-  it("stringifies a non-Error rejection", async () => {
+  it("sanitizes a non-Error rejection instead of stringifying it", async () => {
     mocks.runPipeline.mockRejectedValue("plain string boom");
     const stub = researchStub();
 
     const { run_id } = await stub.createRun({ question: "q" });
     await settle();
+    const state = await stub.getOutput(run_id);
 
-    expect((await stub.getOutput(run_id))?.error).toBe("plain string boom");
+    expect(state?.status).toBe("failed");
+    expect(state?.error).toBeTruthy();
+    expect(state?.error).not.toContain("plain string boom");
+  });
+
+  it("keeps a diagnostic marker out of the stored terminal error and every readout", async () => {
+    const marker = "synthetic-diagnostic-secret /private/synthetic-path stack-marker";
+    mocks.runPipeline.mockRejectedValue(new Error(marker));
+    const stub = researchStub();
+
+    const { run_id } = await stub.createRun({ question: "q" });
+    await settle();
+    const output = await stub.getOutput(run_id);
+    const waited = await stub.waitForRun(run_id, 1);
+
+    expect(output?.status).toBe("failed");
+    for (const readout of [output, waited]) {
+      const text = JSON.stringify(readout);
+      expect(text).not.toContain("synthetic-diagnostic-secret");
+      expect(text).not.toContain("/private/synthetic-path");
+      expect(text).not.toContain("stack-marker");
+    }
+  });
+
+  it("keeps an untyped error's raw message out of the operator log", async () => {
+    const marker = "synthetic-secret-token-value-0001";
+    mocks.runPipeline.mockRejectedValue(new Error(`fetch failed: echoed ${marker}`));
+    const captured: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      captured.push(args.map(String).join(" "));
+    });
+    const stub = researchStub();
+
+    const { run_id } = await stub.createRun({ question: "q" });
+    await settle();
+    spy.mockRestore();
+
+    const lines = captured.filter((l) => l.includes("research run failed"));
+    expect(lines.length).toBe(1);
+    expect(lines[0]).toContain(run_id);
+    expect(lines[0]).not.toContain(marker);
+    expect(lines[0]).toContain("untyped error");
+    const state = await stub.getOutput(run_id);
+    expect(state?.status).toBe("failed");
+  });
+
+  it("keeps a secret-bearing Error.name out of the operator log", async () => {
+    const marker = "synthetic-secret-name-token-0002";
+    const err = new Error("plain failure");
+    err.name = marker;
+    mocks.runPipeline.mockRejectedValue(err);
+    const captured: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      captured.push(args.map(String).join(" "));
+    });
+    const stub = researchStub();
+
+    const { run_id } = await stub.createRun({ question: "q" });
+    await settle();
+    spy.mockRestore();
+
+    const lines = captured.filter((l) => l.includes("research run failed"));
+    expect(lines.length).toBe(1);
+    expect(lines[0]).toContain(run_id);
+    expect(lines[0]).toContain("untyped error");
+    expect(lines[0]).not.toContain(marker);
+    expect(lines[0]).not.toContain("plain failure");
+    const state = await stub.getOutput(run_id);
+    expect(state?.status).toBe("failed");
+  });
+
+  it("logs the typed error's own message to operators", async () => {
+    mocks.runPipeline.mockRejectedValue(
+      new KagiNotConfiguredError("No Kagi credentials configured"),
+    );
+    const captured: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      captured.push(args.map(String).join(" "));
+    });
+    const stub = researchStub();
+
+    await stub.createRun({ question: "q" });
+    await settle();
+    spy.mockRestore();
+
+    const lines = captured.filter((l) => l.includes("research run failed"));
+    expect(lines.length).toBe(1);
+    expect(lines[0]).toContain("No Kagi credentials configured");
+  });
+
+  it("preserves an intentional typed setup error verbatim", async () => {
+    mocks.runPipeline.mockRejectedValue(
+      new KagiNotConfiguredError("No Kagi credentials configured"),
+    );
+    const stub = researchStub();
+
+    const { run_id } = await stub.createRun({ question: "q" });
+    await settle();
+    const state = await stub.getOutput(run_id);
+
+    expect(state?.status).toBe("failed");
+    expect(state?.error).toBe("No Kagi credentials configured");
   });
 
   it("maps the 'cancelled' sentinel to the cancelled status, not failed", async () => {
@@ -183,6 +295,77 @@ describe("pipeline completion", () => {
 
     expect(state?.status).toBe("cancelled");
     expect(state?.error).toBe("cancelled");
+  });
+
+  // R4 exceptional completion: when every step write kept rejecting, the
+  // pipeline cannot return its unrecorded_cents on a result object — it
+  // tags the residual onto the thrown error, and the terminal write must
+  // reconcile it exactly once, whichever terminal status applies.
+  for (const [label, message, status, errorText] of [
+    ["cancelled", "cancelled", "cancelled", "cancelled"],
+    ["failed", "synthetic-secret-marker-7f3a exploded", "failed", undefined],
+  ] as const) {
+    it(`folds a thrown run's residual debit into the ${label} terminal write`, async () => {
+      const err = new Error(message);
+      Object.defineProperty(err, "unrecorded_cents", {
+        value: 1.5,
+        enumerable: false,
+        configurable: true,
+      });
+      mocks.runPipeline.mockRejectedValue(err);
+      const stub = researchStub();
+
+      const { run_id } = await stub.createRun({ question: "q" });
+      await settle();
+      const state = await stub.getOutput(run_id);
+
+      expect(state?.status).toBe(status);
+      expect(state?.cost_cents).toBeCloseTo(1.5);
+      if (errorText !== undefined) expect(state?.error).toBe(errorText);
+      // The raw message is diagnostic text, never the stored error.
+      expect(state?.error).not.toContain("synthetic-secret-marker-7f3a");
+    });
+  }
+
+  // Resolved-pipeline residual across a failed terminal write: the pipeline
+  // completes holding 1.5 unrecorded cents, the `done` UPDATE then throws
+  // before mutating (the trigger aborts only `status = 'done'` writes), and
+  // the smaller failed update succeeds. The catch must fold the resolved
+  // result's residual — not just a tag on the thrown error — into the
+  // failed row exactly once, or the spend is lost.
+  it("folds a resolved run's residual into the failed write when the done update throws", async () => {
+    mocks.runPipeline.mockResolvedValue({ ...PIPELINE_RESULT, unrecorded_cents: 1.5 });
+    const stub = researchStub();
+
+    const { run_id } = await runInDurableObject(stub, async (instance, state) => {
+      state.storage.sql.exec(
+        `CREATE TRIGGER fail_done_update BEFORE UPDATE ON runs
+         WHEN NEW.status = 'done'
+         BEGIN SELECT RAISE(ABORT, 'synthetic-done-write-failure'); END`,
+      );
+      return instance.createRun({ question: "q" });
+    });
+    await settle();
+    const state = await stub.getOutput(run_id);
+
+    expect(state?.status).toBe("failed");
+    expect(state?.cost_cents).toBeCloseTo(1.5);
+    // The raw trigger text is diagnostic, never the stored error.
+    expect(state?.error).not.toContain("synthetic-done-write-failure");
+  });
+
+  // Control: with no interference, a resolved residual reaches the done row
+  // exactly once through the success path.
+  it("folds a resolved run's residual into the done write exactly once", async () => {
+    mocks.runPipeline.mockResolvedValue({ ...PIPELINE_RESULT, unrecorded_cents: 1.5 });
+    const stub = researchStub();
+
+    const { run_id } = await stub.createRun({ question: "q" });
+    await settle();
+    const state = await stub.getOutput(run_id);
+
+    expect(state?.status).toBe("done");
+    expect(state?.cost_cents).toBeCloseTo(1.5);
   });
 
   it("builds the Kagi client from the DO's own env", async () => {
