@@ -12,6 +12,12 @@ updates:
       # Dev tooling churns often and is low risk — batch it into one PR.
       dev-dependencies:
         dependency-type: "development"
+      # `agents` peers exact versions of the three MCP packages, so they can
+      # only ever move together. Dependabot must batch all four in one PR.
+      mcp-stack:
+        patterns:
+          - "agents"
+          - "@modelcontextprotocol/*"
     ignore:
       # vitest 5 needs @cloudflare/vitest-pool-workers support (it peers
       # vitest ^4). Re-take the major once pool-workers supports vitest 5.
