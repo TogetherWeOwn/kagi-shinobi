@@ -12,8 +12,9 @@ updates:
       # Dev tooling churns often and is low risk — batch it into one PR.
       dev-dependencies:
         dependency-type: "development"
-      # `agents` peers exact versions of the three MCP packages, so they can
-      # only ever move together. Dependabot must batch all four in one PR.
+      # `agents` peers exact versions of the three MCP packages. This group
+      # batches the four into one PR when updates are available together —
+      # it does not guarantee lockstep if only some of them have updates.
       mcp-stack:
         patterns:
           - "agents"
@@ -25,7 +26,7 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "@vitest/coverage-istanbul"
         update-types: ["version-update:semver-major"]
-    # Production deps stay ungrouped: each gets its own reviewable PR.
+    # Non-grouped production deps each get their own reviewable PR.
     # Note the lockfile can float other production deps inside their existing
     # caret ranges even when package.json is untouched — diff package-lock.json,
     # not just package.json, when reviewing these.
