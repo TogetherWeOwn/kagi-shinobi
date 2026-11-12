@@ -113,6 +113,12 @@ jobs:
           npm explain undici-types
       - name: Audit complete dependency graph
         run: npm audit --json > dependency-audit.json
+      # `.npmrc` sets legacy-peer-deps=true, so `npm ci` succeeds even when
+      # `agents`' exact MCP peer versions disagree with the pins. `npm ls`
+      # still reports peer mismatches and exits 1, which makes it the guard
+      # `npm ci` cannot be. Four named packages only: `npm ls --all` fails on
+      # pre-existing unrelated conflicts (e.g. openapi-typescript).
+      - run: npm ls agents @modelcontextprotocol/client @modelcontextprotocol/server @modelcontextprotocol/sdk
       # Regenerate the ambient Cloudflare.Env types from wrangler.jsonc.
       # No auth needed — pure type generation.
       #

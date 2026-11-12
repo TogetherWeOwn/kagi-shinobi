@@ -16,16 +16,16 @@
   },
   "dependencies": {
     "@cloudflare/puppeteer": "1.5.0-rc.0",
-    "@modelcontextprotocol/client": "2.3.1",
-    "@modelcontextprotocol/sdk": "1.32.1",
-    "@modelcontextprotocol/server": "2.3.1",
-    "agents": "0.31.0",
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@modelcontextprotocol/server": "2.4.0",
+    "agents": "0.33.0",
     "cheerio": "^1.1.2",
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "^1.4.9",
-    "@playwright/test": "^1.64.0",
+    "@cloudflare/vitest-plugin": "^1.6.0",
+    "@playwright/test": "^1.65.0",
     "@types/node": "26.6.5",
     "@vitest/coverage-istanbul": "^4.1.10",
     "openapi-typescript": "^7.13.0",
