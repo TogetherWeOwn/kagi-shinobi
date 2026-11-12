@@ -79,8 +79,8 @@ configured for it works with a URL change.
 ## Setup
 
 ```powershell
-# 1. Install
-npm install
+# 1. Install the locked dependencies with npm 11.19.0
+npm ci
 
 # 2. Create the KV namespace and copy the id into wrangler.jsonc
 wrangler kv namespace create TOKEN_KV
@@ -94,6 +94,11 @@ wrangler secret put KAGI_PASSWORD        # optional, for auto-refresh
 # 4. Deploy
 wrangler deploy
 ```
+
+Dependency resolution uses npm's three-day minimum release age; installation
+refuses lifecycle scripts through `.npmrc`. Do not enable all scripts to repair
+an artifact. The browser client is an exact worker-only prerelease pin; see
+[its dependency qualification and upgrade boundary](docs/browser-dependencies.md).
 
 For local dev, copy `.dev.vars.example` to `.dev.vars`, fill in values, then
 `npm run dev`.

@@ -4,10 +4,11 @@
 // lease against the real Meter DO; those tests all stop before a browser is
 // launched. This file picks up from there: @cloudflare/puppeteer is mocked, so
 // every branch of the login itself — success, bad credentials, a missing
-// cookie, an outright crash — is reachable without workerd.
+// cookie, an outright crash — is reachable without a real browser. The Meter
+// and token KV still run in workerd. Real package transport has its own suite.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { makeEnv } from "../_helpers";
+import { env } from "cloudflare:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../../src/env";
 import { CHROME_UA, CHROME_VERSION } from "../../src/kagi/headers";
 
@@ -43,31 +44,45 @@ function fakePage(overrides: PageOverrides = {}) {
   };
 }
 
+let lastBrowser: ReturnType<typeof fakeBrowser> | undefined;
+
 function fakeBrowser(page: ReturnType<typeof fakePage>) {
-  return {
+  const browser = {
     newPage: vi.fn().mockResolvedValue(page),
     close: vi.fn().mockResolvedValue(undefined),
   };
+  lastBrowser = browser;
+  return browser;
 }
 
 /** An env where every pre-flight guard passes, so the browser path runs. */
-function refreshableEnv(overrides: Partial<Env> = {}) {
-  return makeEnv({
+function refreshableEnv(overrides: Partial<Env> = {}): Env {
+  return {
+    ...env,
     AUTO_REFRESH_ENABLED: "true",
     BROWSER: {} as Env["BROWSER"],
+    KAGI_SESSION_TOKEN: undefined,
     KAGI_EMAIL: "operator@example.test",
     KAGI_PASSWORD: "hunter2",
     ...overrides,
-  });
+  };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
+  lastBrowser = undefined;
+  await env.METER.get(env.METER.idFromName("refresh")).tryRefreshLease(0, 0, true);
+  await env.TOKEN_KV.delete(env.TOKEN_KV_KEY);
   // `memoryCache` in store.ts is a module global, so a token saved by a
   // successful refresh is still visible to loadToken() through a brand-new
   // env. Without this reset, "no token was stored" passes for the wrong
   // reason — or fails because a neighbouring test stored one.
   clearMemoryCache();
+});
+
+afterEach(() => {
+  // Every acquired browser must be closed, including early login refusals.
+  if (lastBrowser) expect(lastBrowser.close).toHaveBeenCalledTimes(1);
 });
 
 describe("successful login", () => {
@@ -110,7 +125,7 @@ describe("successful login", () => {
     });
     expect(page.goto).toHaveBeenCalledWith(
       "https://kagi.com/signin",
-      expect.objectContaining({ waitUntil: "networkidle2" }),
+      { waitUntil: "networkidle2", timeout: 30_000 },
     );
   });
 
@@ -120,18 +135,24 @@ describe("successful login", () => {
 
     await refreshTokenViaBrowser(refreshableEnv());
 
-    expect(page.waitForSelector).toHaveBeenCalledWith("#signInEmailBox", expect.anything());
+    expect(page.waitForSelector).toHaveBeenCalledWith("#signInEmailBox", { timeout: 15_000 });
     expect(page.type).toHaveBeenNthCalledWith(
       1,
       "#signInEmailBox",
       "operator@example.test",
-      expect.anything(),
+      { delay: 20 },
     );
     expect(page.type).toHaveBeenNthCalledWith(
       2,
       "#signInPassBox",
       "hunter2",
-      expect.anything(),
+      { delay: 20 },
+    );
+    expect(page.waitForNavigation).toHaveBeenCalledWith({
+      waitUntil: "networkidle2", timeout: 25_000,
+    });
+    expect(page.waitForNavigation.mock.invocationCallOrder[0]).toBeLessThan(
+      page.click.mock.invocationCallOrder[0]!,
     );
     expect(page.click).toHaveBeenCalledWith('#signInForm button[type="submit"]');
   });
@@ -282,6 +303,66 @@ describe("crashes", () => {
   });
 });
 
+describe("cleanup and persistence on failure", () => {
+  it.each([
+    "setUserAgent", "setExtraHTTPHeaders", "goto", "waitForSelector",
+    "type", "waitForNavigation", "click", "cookies",
+  ] as const)("closes and writes no token when %s rejects", async (step) => {
+    const page = fakePage();
+    page[step].mockRejectedValue(new Error(`${step} failed`));
+    launch.mockResolvedValue(fakeBrowser(page));
+    const config = refreshableEnv();
+
+    const result = await refreshTokenViaBrowser(config);
+
+    expect(result).toEqual({ ok: false, reason: `refresh failed: ${step} failed` });
+    expect(await config.TOKEN_KV.get(config.TOKEN_KV_KEY)).toBeNull();
+    expect(await loadToken(config)).toBeNull();
+  });
+
+  it.each(["", "captcha required", "Invalid credentials"])(
+    "does not save a cookie while signin reports %j", async (errorText) => {
+      const page = fakePage({
+        url: "https://kagi.com/signin",
+        evaluate: vi.fn().mockResolvedValue(errorText),
+      });
+      launch.mockResolvedValue(fakeBrowser(page));
+      const config = refreshableEnv();
+
+      expect((await refreshTokenViaBrowser(config)).ok).toBe(false);
+      expect(page.cookies).not.toHaveBeenCalled();
+      expect(await config.TOKEN_KV.get(config.TOKEN_KV_KEY)).toBeNull();
+    },
+  );
+
+  it("does not write through the token cache when KV save fails", async () => {
+    launch.mockResolvedValue(fakeBrowser(fakePage()));
+    const put = vi.fn().mockRejectedValue(new Error("KV unavailable"));
+    const config = refreshableEnv({
+      TOKEN_KV: { put } as unknown as Env["TOKEN_KV"],
+    });
+
+    expect(await refreshTokenViaBrowser(config)).toEqual({
+      ok: false, reason: "refresh failed: KV unavailable",
+    });
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(await loadToken(refreshableEnv())).toBeNull();
+  });
+
+  it("clears inflight after a launch rejection so a forced retry can succeed", async () => {
+    launch.mockRejectedValueOnce(new Error("acquire refused"))
+      .mockResolvedValueOnce(fakeBrowser(fakePage()));
+    const config = refreshableEnv();
+
+    expect((await refreshTokenViaBrowser(config)).ok).toBe(false);
+    expect(await config.TOKEN_KV.get(config.TOKEN_KV_KEY)).toBeNull();
+    expect(await refreshTokenViaBrowser(config, { force: true })).toEqual({
+      ok: true, token: "tok-live",
+    });
+    expect(launch).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("per-isolate single flight", () => {
   it("coalesces concurrent callers into one browser session", async () => {
     const page = fakePage();
@@ -300,14 +381,16 @@ describe("per-isolate single flight", () => {
   });
 
   it("clears the in-flight slot so a later call can run again", async () => {
-    const page = fakePage();
-    launch.mockResolvedValue(fakeBrowser(page));
+    const firstBrowser = fakeBrowser(fakePage());
+    const secondBrowser = fakeBrowser(fakePage());
+    launch.mockResolvedValueOnce(firstBrowser).mockResolvedValueOnce(secondBrowser);
 
-    // Separate envs: each carries its own Meter, so the 60s lease taken by the
-    // first refresh does not turn the second one away.
-    await refreshTokenViaBrowser(refreshableEnv());
-    await refreshTokenViaBrowser(refreshableEnv());
+    expect((await refreshTokenViaBrowser(refreshableEnv())).ok).toBe(true);
+    // The real Meter lease remains held; force isolates the single-flight slot.
+    expect((await refreshTokenViaBrowser(refreshableEnv(), { force: true })).ok).toBe(true);
 
     expect(launch).toHaveBeenCalledTimes(2);
+    expect(firstBrowser.close).toHaveBeenCalledTimes(1);
+    expect(secondBrowser.close).toHaveBeenCalledTimes(1);
   });
 });
