@@ -8,13 +8,14 @@
 # public endpoints or input parsing; auth, authorization or sessions; crypto,
 # keys, secrets or credentials; permissions, tenant isolation or personal data;
 # SQL, schema or migrations; dependencies and lockfiles (including dev deps);
-# CI or workflows; weakened assertions, deleted tests/snapshots or lower gates.
-# Test allowlists cover additive-only changes, never weakened or deleted tests.
+# CI or workflows; executable content in fixtures; weakened assertions, deleted
+# tests/snapshots or lower gates. Test allowlists cover additive-only changes,
+# never weakened or deleted tests.
 version: 1
 default_tier: sensitive
 tiers:
   low:
-    # Static search-result samples; executable or sensitive additions do not match.
+    # Static search-result samples; executable content escalates as above.
     - test/fixtures/search/basic-results.html
     - test/fixtures/search/grouped-results.html
     - test/fixtures/search/news-heavy.html
