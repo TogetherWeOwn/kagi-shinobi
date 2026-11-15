@@ -29,3 +29,4 @@ than quietly rewritten.
 | [0020](0020-stateless-mcp-serving.md) | Serve /mcp statelessly, without a per-session Durable Object | partially superseded by 0022 | 2026-10-27 |
 | [0021](0021-rest-error-disclosure.md) | Restrict REST error disclosure | accepted | 2026-10-28 |
 | [0022](0022-bounded-http-admission.md) | Bound input before parsing or dispatch | accepted | 2026-10-28 |
+| [0023](0023-sequential-paid-dispatch-and-retained-charges.md) | Sequential paid dispatch and retained-charge bookkeeping in research | accepted | 2026-11-08 |

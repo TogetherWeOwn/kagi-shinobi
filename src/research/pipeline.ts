@@ -7,6 +7,9 @@
 // paths are free — but api-only steps are skipped.
 
 import type { KagiClient } from "../kagi/client.js";
+import { capabilityFor, pickImpl } from "../kagi/capability.js";
+import { chargedCostCents, safeErrorMessage } from "../kagi/errors.js";
+import type { KagiImpl } from "../kagi/types.js";
 import type {
   ResearchCitation,
   ResearchRunState,
@@ -16,9 +19,55 @@ import type {
 
 const MAX_SUBQUERIES = 5;
 const TOP_N_PER_SUBQUERY = 3;
+// Costs are fractional cents (1.2¢ a search); an exact-budget call must not
+// be refused over binary floating-point dust.
+const COST_EPSILON = 1e-9;
 
 export interface StepEmit {
   (stage: ResearchStatus, detail: string, cost_cents?: number): Promise<void>;
+}
+
+/**
+ * Wrap the persistence callback so one rejected step write cannot lose a
+ * settled charge. The callback contract is record-on-success only — the
+ * Durable Object persists a step and its cost in a single SQL update, so a
+ * throw means nothing was recorded and retrying cannot double-book. A
+ * cost-bearing write that rejects is retried once immediately; if that
+ * also rejects, the debit is carried onto the next successful write (and
+ * `flush()` makes a final attempt at the end of the run) instead of
+ * aborting the pipeline or being misread as a paid-call failure. The local
+ * spend tracker has already booked the debit either way, so the run budget
+ * stays a ceiling while persistence is degraded.
+ */
+function makeReliableEmit(emit: StepEmit): {
+  emit: StepEmit;
+  flush: () => Promise<void>;
+  pending: () => number;
+} {
+  let pendingCents = 0;
+  let lastStage: ResearchStatus = "planning";
+  const reliable: StepEmit = async (stage, detail, cost_cents) => {
+    lastStage = stage;
+    const totalCents = pendingCents + (cost_cents ?? 0);
+    const toEmit = totalCents > 0 ? totalCents : cost_cents;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await emit(stage, detail, toEmit);
+        pendingCents = 0;
+        return;
+      } catch {
+        // One immediate retry, then carry the debit forward (below).
+      }
+    }
+    pendingCents = totalCents;
+  };
+  return {
+    emit: reliable,
+    flush: async () => {
+      if (pendingCents > 0) await reliable(lastStage, "Reconciled research spend");
+    },
+    pending: () => pendingCents,
+  };
 }
 
 export interface StateAccessors {
@@ -28,13 +77,102 @@ export interface StateAccessors {
   allowApi(): boolean;
 }
 
+// Per-run spend bookkeeping. `spentCents()` only learns about a call once
+// its cost has been emitted (the DO persists step costs), which is after
+// the fact — and a batch of concurrent calls would all pass a naive
+// pre-flight check against the same stale balance. The tracker books each
+// paid call's reported `meta.cost_cents` locally and immediately (paid
+// calls are checked against the published rate *before* they run), and
+// `remaining()` reconciles that with the persisted figure by taking
+// whichever has seen more spend, never the sum — the same booking reaches
+// both ledgers once emitted.
+interface SpendTracker {
+  bookedLocalCents: number;
+}
+
+function newSpendTracker(): SpendTracker {
+  return { bookedLocalCents: 0 };
+}
+
+async function remainingCents(state: StateAccessors, tracker: SpendTracker): Promise<number> {
+  const spent = Math.max(await state.spentCents(), tracker.bookedLocalCents);
+  return state.budgetCents() - spent;
+}
+
+function bookSpend(tracker: SpendTracker, cents: number | undefined): void {
+  if (cents !== undefined && Number.isFinite(cents) && cents > 0) {
+    tracker.bookedLocalCents += cents;
+  }
+}
+
+/**
+ * Book a failed dispatched call's charge, when it carries one (see
+ * withChargedCost in ../kagi/errors.ts — any throw after the monthly guard
+ * admitted the call, settled or not), and return it so the caller emits
+ * it on the failure step too. A paid call that throws after dispatch is
+ * still a paid call: booking only fulfilled calls re-admits the same
+ * balance for the next call and the run budget stops being a ceiling
+ * exactly on the failure paths.
+ */
+function bookChargedFailure(tracker: SpendTracker, err: unknown): number | undefined {
+  const cents = chargedCostCents(err);
+  bookSpend(tracker, cents);
+  return cents;
+}
+
+/** True when this run may not spend at all: free scrape path only. */
+function noSpend(state: StateAccessors): boolean {
+  return !state.allowApi() || state.budgetCents() <= 0;
+}
+
+/** The impl that would serve `tool`, or undefined when it cannot be served. */
+function implFor(
+  client: KagiClient,
+  tool: string,
+  override?: KagiImpl,
+): KagiImpl | undefined {
+  try {
+    return pickImpl(tool, client.mode, override);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Published per-call API rate for a tool, 0 when the tool is not billable. */
+function estimateCents(tool: string): number {
+  return capabilityFor(tool)?.api_cents_per_call ?? 0;
+}
+
+async function canAfford(
+  state: StateAccessors,
+  tracker: SpendTracker,
+  tool: string,
+): Promise<boolean> {
+  if (!state.allowApi()) return false;
+  return (await remainingCents(state, tracker)) + COST_EPSILON >= estimateCents(tool);
+}
+
 /** Try FastGPT to decompose the question. Falls back to a single subquery. */
 async function planSubqueries(
   client: KagiClient,
   question: string,
   state: StateAccessors,
-): Promise<string[]> {
-  if (!state.allowApi() || state.budgetCents() <= 0) return [question];
+  tracker: SpendTracker,
+): Promise<{ subqueries: string[]; cost_cents?: number }> {
+  if (noSpend(state)) return { subqueries: [question] };
+  const impl = implFor(client, "kagi_fastgpt");
+  // In an API-only deployment this call bills; a budget that cannot cover
+  // one planning call keeps the whole run on the caller's question instead
+  // of spending past the ceiling before the first search.
+  if (impl === "api" && !(await canAfford(state, tracker, "kagi_fastgpt"))) {
+    return { subqueries: [question] };
+  }
+  // A response can settle its charge and only then prove unusable in our
+  // own hands (a non-string answer throws at `.split`). That cost is
+  // already booked locally below, so the catch must return it for the
+  // caller to emit — an un-emitted booking never reaches the persisted
+  // run state and the durable ledger under-reports the run.
+  let settledCost: number | undefined;
   try {
     const prompt =
       `Decompose the following research question into 3-5 concise, ` +
@@ -42,49 +180,98 @@ async function planSubqueries(
       `Return the sub-queries as a numbered list, one per line, no commentary.\n\n` +
       `Question: ${question}`;
     const resp = await client.fastGPT({ query: prompt, cache: true });
+    settledCost = resp.meta?.cost_cents;
+    bookSpend(tracker, settledCost);
+    if (typeof resp.answer !== "string") throw new Error("planning answer was not text");
     const subqueries = resp.answer
       .split("\n")
       .map((s) => s.replace(/^\s*\d+[\.)\-]\s*/, "").trim())
       .filter((s) => s.length > 0 && s.length < 200)
       .slice(0, MAX_SUBQUERIES);
-    return subqueries.length > 0 ? subqueries : [question];
-  } catch {
-    return [question];
+    return { subqueries: subqueries.length > 0 ? subqueries : [question], cost_cents: settledCost };
+  } catch (err) {
+    return {
+      subqueries: [question],
+      cost_cents: settledCost ?? bookChargedFailure(tracker, err),
+    };
   }
 }
+
+type SearchBundle = {
+  subquery: string;
+  urls: string[];
+  titles: Record<string, string>;
+  snippets: Record<string, string>;
+};
 
 async function searchAllSubqueries(
   client: KagiClient,
   subqueries: string[],
   emit: StepEmit,
-): Promise<Array<{ subquery: string; urls: string[]; titles: Record<string, string>; snippets: Record<string, string> }>> {
-  const out: Array<{
-    subquery: string;
-    urls: string[];
-    titles: Record<string, string>;
-    snippets: Record<string, string>;
-  }> = [];
-  const settled = await Promise.allSettled(
-    subqueries.map((q) => client.search({ q, limit: TOP_N_PER_SUBQUERY })),
-  );
-  for (let i = 0; i < subqueries.length; i++) {
-    const s = settled[i];
-    if (s.status === "fulfilled") {
+  state: StateAccessors,
+  tracker: SpendTracker,
+): Promise<SearchBundle[]> {
+  // A no-spend run pins every search to the free scrape impl. In an
+  // API-only deployment that pin is refused by the dispatcher before any
+  // network call, so the sub-query fails safe instead of billing.
+  const forcedImpl: KagiImpl | undefined = noSpend(state) ? "scrape" : undefined;
+  const servingImpl = implFor(client, "kagi_search_fetch", forcedImpl);
+  const record = async (
+    subquery: string,
+    settled: PromiseSettledResult<Awaited<ReturnType<KagiClient["search"]>>>,
+    out: SearchBundle[],
+  ): Promise<void> => {
+    if (settled.status === "fulfilled") {
       const titles: Record<string, string> = {};
       const snippets: Record<string, string> = {};
-      const urls = s.value.results.map((r) => {
+      const urls = settled.value.results.map((r) => {
         titles[r.url] = r.title;
         snippets[r.url] = r.snippet;
         return r.url;
       });
-      out.push({ subquery: subqueries[i], urls, titles, snippets });
-      await emit("searching", `Found ${urls.length} results for "${subqueries[i]}"`);
+      out.push({ subquery, urls, titles, snippets });
+      const cost = settled.value.meta?.cost_cents;
+      bookSpend(tracker, cost);
+      await emit("searching", `Found ${urls.length} results for "${subquery}"`, cost);
     } else {
       await emit(
         "searching",
-        `Search failed for "${subqueries[i]}": ${describe(s.reason)}`,
+        `Search failed for "${subquery}": ${describe(settled.reason)}`,
+        bookChargedFailure(tracker, settled.reason),
       );
     }
+  };
+
+  const out: SearchBundle[] = [];
+  if (servingImpl !== "api") {
+    // Free path (or a pin the dispatcher will refuse): no billing at stake,
+    // so fan out as before.
+    const settled = await Promise.allSettled(
+      subqueries.map((q) => client.search({ q, limit: TOP_N_PER_SUBQUERY, impl: forcedImpl })),
+    );
+    for (let i = 0; i < subqueries.length; i++) {
+      await record(subqueries[i], settled[i], out);
+    }
+    return out;
+  }
+
+  // Paid path: run sequentially, re-checking the remaining budget before
+  // each call and booking the actual cost before the next check. Fanning
+  // these out would let every concurrent sub-query pass the same
+  // pre-flight balance and overspend a small budget.
+  for (const q of subqueries) {
+    if (await state.isCancelled()) break;
+    if (!(await canAfford(state, tracker, "kagi_search_fetch"))) {
+      await emit("searching", `Search skipped for "${q}": research budget exhausted`);
+      continue;
+    }
+    let settled: PromiseSettledResult<Awaited<ReturnType<KagiClient["search"]>>>;
+    try {
+      settled = { status: "fulfilled", value: await client.search({ q, limit: TOP_N_PER_SUBQUERY }) };
+    } catch (reason) {
+      settled = { status: "rejected", reason };
+    }
+    await record(q, settled, out);
   }
   return out;
 }
@@ -94,41 +281,97 @@ async function extractOrSummarize(
   urls: string[],
   emit: StepEmit,
   state: StateAccessors,
+  tracker: SpendTracker,
 ): Promise<Array<{ url: string; content: string }>> {
   if (urls.length === 0) return [];
-  const useApi = state.allowApi() && state.budgetCents() - (await state.spentCents()) > 5;
+  const useApi = state.allowApi() && (await remainingCents(state, tracker)) > 5;
   if (useApi) {
+    // Only the paid call sits in this try: a failure to persist the step
+    // recording a successful extraction must not be misread as an
+    // extraction failure (which would drop the settled debit and pay again
+    // for the summarize fallback).
+    let resp: Awaited<ReturnType<KagiClient["extract"]>> | undefined;
     try {
-      const resp = await client.extract({ urls: urls.slice(0, 10) });
+      resp = await client.extract({ urls: urls.slice(0, 10) });
+    } catch (err) {
+      await emit(
+        "extracting",
+        `Extract failed, falling back to summarize: ${describe(err)}`,
+        bookChargedFailure(tracker, err),
+      );
+    }
+    if (resp) {
+      bookSpend(tracker, resp.meta.cost_cents);
       await emit(
         "extracting",
         `Extracted ${resp.pages.length} pages via /v1/extract`,
         resp.meta.cost_cents,
       );
       return resp.pages.map((p) => ({ url: p.url, content: p.markdown }));
-    } catch (err) {
-      await emit("extracting", `Extract failed, falling back to summarize: ${describe(err)}`);
     }
   }
-  // Fallback / scrape-mode path: summarize each URL individually.
-  const settled = await Promise.allSettled(
-    urls.slice(0, 5).map((url) =>
-      client.summarize({
-        kind: "url",
-        ref: url,
-        language: "EN",
-        style: "summary",
-      }),
-    ),
-  );
+  // Fallback / scrape-mode path: summarize each URL individually. The same
+  // no-spend pin and per-call budget check as the search stage apply: in
+  // an API-only deployment this fallback is a paid call per URL, and a
+  // search that already spent the budget must not re-spend it here.
+  const forcedImpl: KagiImpl | undefined = noSpend(state) ? "scrape" : undefined;
+  const servingImpl = implFor(client, "kagi_summarize_url", forcedImpl);
+  const summarizeOne = (url: string) =>
+    client.summarize({
+      kind: "url",
+      ref: url,
+      language: "EN",
+      style: "summary",
+      impl: forcedImpl,
+    });
+  const batch = urls.slice(0, 5);
   const results: Array<{ url: string; content: string }> = [];
-  for (let i = 0; i < settled.length; i++) {
-    const s = settled[i];
-    if (s.status === "fulfilled") {
-      results.push({ url: urls[i], content: s.value.summary });
+  let totalCost = 0;
+  if (servingImpl !== "api") {
+    const settled = await Promise.allSettled(batch.map(summarizeOne));
+    for (let i = 0; i < settled.length; i++) {
+      const s = settled[i];
+      if (s.status === "fulfilled") {
+        results.push({ url: batch[i], content: s.value.summary });
+        bookSpend(tracker, s.value.meta?.cost_cents);
+        totalCost += s.value.meta?.cost_cents ?? 0;
+      } else {
+        totalCost += bookChargedFailure(tracker, s.reason) ?? 0;
+      }
     }
+    await emit(
+      "extracting",
+      `Summarized ${results.length}/${batch.length} URLs via scrape summarizer`,
+      totalCost > 0 ? totalCost : undefined,
+    );
+    return results;
   }
-  await emit("extracting", `Summarized ${results.length}/${settled.length} URLs via scrape summarizer`);
+  // Paid loop: sequential like the paid search loop above, and each settled
+  // or charged-failure debit is handed to reliable persistence immediately
+  // after its own call — before the next cancellation or affordability
+  // check. Aggregating into one write at the end would leave every debit so
+  // far in a local counter if the loop escapes on a throw: neither the
+  // reliable emitter nor the terminal write could ever see it.
+  for (const url of batch) {
+    if (await state.isCancelled()) break;
+    if (!(await canAfford(state, tracker, "kagi_summarize_url"))) break;
+    let urlCost: number | undefined;
+    let detail: string;
+    try {
+      const resp = await summarizeOne(url);
+      results.push({ url, content: resp.summary });
+      bookSpend(tracker, resp.meta?.cost_cents);
+      urlCost = resp.meta?.cost_cents;
+      detail = `Summarized ${url} via scrape summarizer`;
+    } catch (err) {
+      // A charge settled before the failure is still booked and is handed
+      // to persistence on this step — it must keep urlCost — but the step
+      // text must not claim a summary the run never gathered.
+      urlCost = bookChargedFailure(tracker, err);
+      detail = `Summarize failed for ${url}: ${describe(err)}`;
+    }
+    await emit("extracting", detail, urlCost);
+  }
   return results;
 }
 
@@ -137,10 +380,22 @@ async function synthesize(
   question: string,
   materials: Array<{ url: string; title: string; content: string }>,
   state: StateAccessors,
-): Promise<string> {
-  if (materials.length === 0) return "No source material was gathered for this question.";
-  const canFastGPT = state.allowApi() && state.budgetCents() - (await state.spentCents()) > 3;
+  tracker: SpendTracker,
+): Promise<{ report: string; cost_cents?: number }> {
+  if (materials.length === 0) {
+    return { report: "No source material was gathered for this question." };
+  }
+  let synthFailureCost: number | undefined;
+  const impl = implFor(client, "kagi_fastgpt");
+  const canFastGPT =
+    state.allowApi() &&
+    (await remainingCents(state, tracker)) > 3 &&
+    (impl !== "api" || (await canAfford(state, tracker, "kagi_fastgpt")));
   if (canFastGPT) {
+    // Same settled-then-unusable rule as planning: a non-string answer is
+    // booked (and emitted via synthFailureCost), never returned as the
+    // report and never silently dropped from the ledger.
+    let settledCost: number | undefined;
     try {
       const bullets = materials
         .map((m, i) => `[${i + 1}] ${m.title} (${m.url})\n${m.content.slice(0, 2000)}`)
@@ -151,9 +406,14 @@ async function synthesize(
         `numbers. Be specific and quote key facts when helpful.\n\n` +
         `Question: ${question}\n\nSources:\n${bullets}`;
       const resp = await client.fastGPT({ query: prompt, cache: true });
-      return resp.answer;
-    } catch {
-      // fall through
+      settledCost = resp.meta?.cost_cents;
+      bookSpend(tracker, settledCost);
+      if (typeof resp.answer !== "string") throw new Error("synthesis answer was not text");
+      return { report: resp.answer, cost_cents: settledCost };
+    } catch (err) {
+      // Fall through to the deterministic report — but a charge settled
+      // before the failure is still booked and reported to the caller.
+      synthFailureCost = settledCost ?? bookChargedFailure(tracker, err);
     }
   }
   // Deterministic fallback: concatenate. Not pretty, but keeps the pipeline
@@ -166,12 +426,56 @@ async function synthesize(
     lines.push(m.content.slice(0, 1500));
     lines.push("");
   });
-  return lines.join("\n");
+  return { report: lines.join("\n"), cost_cents: synthFailureCost };
 }
 
+// Step details are returned to clients with the run state, so they get the
+// same treatment as every other surface: typed vocabulary or generic.
 function describe(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
+  return safeErrorMessage(err);
+}
+
+/**
+ * Spend the reliable emitter still holds when the pipeline leaves on a
+ * thrown value. A result object cannot ride an exception, so the residual
+ * debit is tagged onto the thrown error the same way `withChargedCost`
+ * tags a dispatched call's charge: non-enumerable, never serialized into
+ * anything client-visible. The caller folds it into its failed/cancelled
+ * terminal write exactly once; read it with `unrecordedCentsOf`.
+ */
+const UNRECORDED_CENTS = "unrecorded_cents";
+
+function tagUnrecordedCents(err: unknown, cents: number): unknown {
+  // A primitive throw is wrapped so it can carry the tag; the wrap keeps
+  // the caller's classification identical because it reads String(err) for
+  // exactly this purpose.
+  const target =
+    err !== null && (typeof err === "object" || typeof err === "function")
+      ? err
+      : new Error(String(err));
+  try {
+    Object.defineProperty(target, UNRECORDED_CENTS, {
+      value: cents,
+      enumerable: false,
+      configurable: true,
+    });
+  } catch {
+    // A frozen thrown value cannot carry the tag; it still propagates
+    // unchanged.
+  }
+  return target;
+}
+
+/**
+ * The residual debit a `runPipeline` rejection still carried, or 0. Reads
+ * the non-enumerable tag set by `tagUnrecordedCents`; anything else —
+ * including an error thrown before any spend or by another layer — has no
+ * tag and folds nothing.
+ */
+export function unrecordedCentsOf(err: unknown): number {
+  if (err === null || (typeof err !== "object" && typeof err !== "function")) return 0;
+  const value = (err as Record<string, unknown>)[UNRECORDED_CENTS];
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
 /**
@@ -187,20 +491,68 @@ export async function runPipeline(
   plan: string[];
   citations: ResearchCitation[];
   report_markdown: string;
+  /**
+   * Spend still unrecorded after the final flush — every write carrying it
+   * rejected. Nonzero only when persistence failed repeatedly; the caller
+   * must fold it into the terminal write so a completed run never reports
+   * less than its paid calls retained. On a THROWN exit the same residual
+   * rides on the error itself — see `unrecordedCentsOf`.
+   */
+  unrecorded_cents: number;
+}> {
+  // Every step write goes through the reliable wrapper, so a single
+  // rejected persistence write cannot abort the run or lose a debit. The
+  // wrapper never throws, so the flush cannot mask the original error.
+  const reliable = makeReliableEmit(emit);
+  let result: Awaited<ReturnType<typeof runPipelineStages>>;
+  try {
+    result = await runPipelineStages(client, initial, reliable.emit, state);
+  } catch (err) {
+    // Also discharges a carried debit on the abort paths (cancel/throw) —
+    // and whatever the flush still could not deliver must reach the
+    // caller's terminal write, not die inside the wrapper. The original
+    // error's identity, message and type are preserved so the caller's
+    // classification (the "cancelled" sentinel, typed-error messages) is
+    // unchanged; a primitive throw is wrapped in an Error whose message is
+    // the same stringification.
+    await reliable.flush();
+    throw tagUnrecordedCents(err, reliable.pending());
+  }
+  await reliable.flush();
+  // Read pending only after every flush attempt: anything still held here
+  // truly never reached storage and must be folded into the terminal write.
+  return { ...result, unrecorded_cents: reliable.pending() };
+}
+
+async function runPipelineStages(
+  client: KagiClient,
+  initial: ResearchRunState,
+  emitStep: StepEmit,
+  state: StateAccessors,
+): Promise<{
+  plan: string[];
+  citations: ResearchCitation[];
+  report_markdown: string;
 }> {
   const question = initial.question;
   const depth = Math.max(1, Math.min(3, initial.depth || 1));
+  const tracker = newSpendTracker();
 
   if (await state.isCancelled()) throw new Error("cancelled");
 
   // Plan.
-  await emit("planning", "Decomposing question into sub-queries");
-  const plan = await planSubqueries(client, question, state);
-  await emit("planning", `Plan: ${plan.length} sub-queries`);
+  await emitStep("planning", "Decomposing question into sub-queries");
+  const { subqueries: plan, cost_cents: planCost } = await planSubqueries(
+    client,
+    question,
+    state,
+    tracker,
+  );
+  await emitStep("planning", `Plan: ${plan.length} sub-queries`, planCost);
 
   // Search all subqueries.
   if (await state.isCancelled()) throw new Error("cancelled");
-  const searchBundles = await searchAllSubqueries(client, plan, emit);
+  const searchBundles = await searchAllSubqueries(client, plan, emitStep, state, tracker);
 
   // Dedup URLs; keep the first appearance's title/snippet.
   const seen = new Map<string, { title: string; snippet: string }>();
@@ -213,18 +565,26 @@ export async function runPipeline(
 
   // Extract or summarize.
   if (await state.isCancelled()) throw new Error("cancelled");
-  const materials = await extractOrSummarize(client, topUrls, emit, state);
+  const materials = await extractOrSummarize(client, topUrls, emitStep, state, tracker);
 
   // Synthesize.
   if (await state.isCancelled()) throw new Error("cancelled");
-  await emit("synthesizing", "Composing report");
+  await emitStep("synthesizing", "Composing report");
   const enriched = materials.map((m) => ({
     url: m.url,
     title: seen.get(m.url)?.title ?? m.url,
     content: m.content,
   }));
-  const report_markdown = await synthesize(client, question, enriched, state);
-
+  const { report: report_markdown, cost_cents: synthCost } = await synthesize(
+    client,
+    question,
+    enriched,
+    state,
+    tracker,
+  );
+  if (synthCost !== undefined && synthCost > 0) {
+    await emitStep("synthesizing", "Composed report", synthCost);
+  }
   const citations: ResearchCitation[] = enriched.map((m, i) => ({
     n: i + 1,
     title: m.title,

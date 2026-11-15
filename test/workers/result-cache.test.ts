@@ -294,6 +294,112 @@ describe("ReadThroughCache", () => {
     expect(again).toMatchObject({ n: 2, meta: { cache_hit: false } });
   });
 
+  it("returns a settled paid response whose serialisation fails and releases the claim", async () => {
+    const released: string[] = [];
+    const stub: CacheStub = {
+      acquire: async (): Promise<AcquireResult> => ({ status: "claimed" }),
+      recordHit: async () => {},
+      release: async (key: string) => {
+        released.push(key);
+      },
+      store: async () => {},
+    };
+    const rtc = new ReadThroughCache(stub);
+    const circular: { meta: MetaBlock; self?: unknown } = {
+      meta: { impl: "api", cache_hit: false, elapsed_ms: 0, cost_cents: 1.5 },
+    };
+    circular.self = circular;
+    const fetcher = vi.fn(async () => circular);
+
+    const value = await rtc.readThrough("search", "kagi", { q: uniq("circular") }, fetcher);
+
+    expect(value).toBe(circular);
+    // The settled charge survives on the returned value for the caller's
+    // spend bookkeeping even though nothing was cached.
+    expect(value.meta.cost_cents).toBe(1.5);
+    expect(released).toHaveLength(1);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("still returns the paid response when post-settlement cache bookkeeping throws", async () => {
+    const released: string[] = [];
+    const stub: CacheStub = {
+      acquire: async (): Promise<AcquireResult> => ({ status: "claimed" }),
+      recordHit: async () => {},
+      release: async (key: string) => {
+        released.push(key);
+      },
+      store: async () => {
+        throw new Error("Durable Object write failed");
+      },
+    };
+    const rtc = new ReadThroughCache(stub);
+    const fetcher = counter(uniq("store-fail"), { cost_cents: 1.5 });
+
+    const value = await rtc.readThrough("search", "kagi", { q: uniq("bookkeeping") }, fetcher);
+
+    expect(value.n).toBe(1);
+    expect(value.meta.cost_cents).toBe(1.5);
+    expect(released).toHaveLength(1);
+  });
+
+  it("still refreshes L1 and releases the claim when a claimed store write fails", async () => {
+    // Same key for the claimed fetch and the subsequent read: a failed L2
+    // store has no row to serve, but the fresher body the paid fetch settled
+    // must still reach L1 — otherwise this caller keeps serving the older
+    // entry, or pays again when there was none.
+    const released: string[] = [];
+    const stub: CacheStub = {
+      acquire: async (): Promise<AcquireResult> => ({ status: "claimed" }),
+      recordHit: async () => {},
+      release: async (key: string) => {
+        released.push(key);
+      },
+      store: async () => {
+        throw new Error("Durable Object write failed");
+      },
+    };
+    const rtc = new ReadThroughCache(stub);
+    const q = uniq("claimed-store-fail");
+    const fetcher = counter(q, { cost_cents: 1.5 });
+
+    const first = await rtc.readThrough("search", "kagi", { q }, fetcher);
+    const after = await rtc.readThrough("search", "kagi", { q }, fetcher);
+
+    expect(first).toMatchObject({ n: 1, meta: { cache_hit: false, cost_cents: 1.5 } });
+    expect(after).toMatchObject({ n: 1, meta: { cache_hit: true, cost_cents: 0 } });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(released).toHaveLength(1);
+  });
+
+  it("still refreshes L1 with a bypass fetch whose L2 store fails", async () => {
+    const released: string[] = [];
+    const stub: CacheStub = {
+      acquire: async (): Promise<AcquireResult> => ({ status: "claimed" }),
+      recordHit: async () => {},
+      release: async (key: string) => {
+        released.push(key);
+      },
+      store: async () => {
+        throw new Error("Durable Object write failed");
+      },
+    };
+    const rtc = new ReadThroughCache(stub);
+    const q = uniq("bypass-store-fail");
+    const fetcher = counter(q);
+
+    const fresh = await rtc.readThrough("search", "kagi", { q }, fetcher, { maxAgeS: 0 });
+    // An ordinary read on this key must not keep serving the pre-refresh L1
+    // entry; the unclaimed bypass has no claim to release, but its fresher
+    // body still belongs in L1.
+    const after = await rtc.readThrough("search", "kagi", { q }, fetcher);
+
+    expect(fresh).toMatchObject({ n: 1, meta: { cache_hit: false } });
+    expect(after).toMatchObject({ n: 1, meta: { cache_hit: true } });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(released).toHaveLength(0);
+  });
+
   it(`does not store a body over ${MAX_STORED_BYTES} bytes`, async () => {
     const { rtc } = rt("rt-oversize");
     const q = uniq("oversize");
