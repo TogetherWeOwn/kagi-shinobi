@@ -70,11 +70,87 @@ up. `0` disables a window. See ADR 0019.
 
 ## MCP tools exposed
 
-- `kagi_search_fetch({ queries: string[], limit?: number, engine?: "kagi"|"searxng"|"auto" })` — max 20 queries per call
-- `kagi_summarizer({ url: string, summary_type?: "summary"|"takeaway", target_language?: string })`
+`tools/list` advertises the tools below for the **resolved** `KAGI_MODE`.
+`yes` means registered, not that credentials, spend permission or upstream
+availability have been verified. Explicit `scrape`, `api` and `hybrid` modes
+are honored even when credentials are missing. With `KAGI_MODE=auto` (the
+resolver default when unset), a session token alone selects `scrape`, an API
+key alone selects `api`, both select `hybrid`, and neither is a configuration
+error. The checked-in deployment configuration selects `scrape` explicitly.
 
-Schemas match the upstream `kagi-ken-mcp` server so any client already
-configured for it works with a URL change.
+| Tool | Purpose / principal inputs | scrape | api | hybrid |
+|---|---|---|---|---|
+| `kagi_search_fetch` | Search `queries` (1–20); optional `limit` (1–50), `engine` (`kagi`, `searxng`, `auto`), `impl`, `response_format`, `max_age_s` | yes | yes | yes |
+| `kagi_summarizer` | Summarize a `url`; optional `summary_type` (`summary`, `takeaway`), `target_language`, `impl`, `max_age_s` | yes | yes | yes |
+| `kagi_small_web` | Search Small Web with optional `q` and `limit`; omitting `q` browses the public feed on the scrape path, but uses API search on the API path | yes | yes | yes |
+| `kagi_summarize_url` | Summarize a `url`; optional `engine` and `confirm_muriel` apply only on the API path; also accepts `summary_type`, `target_language`, `impl`, `max_age_s` | yes | yes | yes |
+| `kagi_fastgpt` | Answer a `query` with references; optional `cache`, `impl`, `max_age_s` | yes | yes | yes |
+| `kagi_personalized_rank` | Rerank `urls` (1–20); optional `q`, `rules`, `impl`; API ranking requires `q`, scrape ranking ignores `rules` | yes | yes | yes |
+| `kagi_research_create_run` | Start research for a `question`; optional `depth` (1–3, default 1), `budget_cents` (default 0), `allow_api` (default true); returns `run_id` | yes | yes | yes |
+| `kagi_research_wait_for_run` | Wait on `run_id`; `timeout_seconds` is 1–300 (default 30); returns current state on completion or timeout | yes | yes | yes |
+| `kagi_research_get_output` | Read current state for `run_id`, including report text when done | yes | yes | yes |
+| `kagi_research_cancel_run` | Request cooperative cancellation of `run_id`; does not abort an in-flight upstream call | yes | yes | yes |
+| `kagi_summarize_text` | Summarize raw `text`; optional summarizer `engine`, `confirm_muriel`, `summary_type`, `target_language`, `max_age_s` | — | yes | yes |
+| `kagi_extract` | Extract `urls` (1–10); optional `format` (`markdown`, `text`), `timeout_ms` | — | yes | yes |
+| `kagi_enrich_web` | Search Teclis with `q`; returns metadata, not page bodies | — | yes | yes |
+| `kagi_enrich_news` | Search TinyGem with `q`; returns metadata, not page bodies | — | yes | yes |
+
+The last four tools are omitted entirely in scrape mode. `kagi_search` and
+`kagi_list_lenses` are capability-table entries, **not registered MCP tools**.
+This is a principal-input inventory, not a replacement for the full schemas:
+read `tools/list` on your deployment for exact input schemas, defaults and
+any published output schema (currently only `kagi_search_fetch` publishes
+one). It does not establish drop-in compatibility with upstream clients.
+
+### Execution gates and research limits
+
+- Every `/mcp` request requires `ADMIN_TOKEN` or a configured scoped client key
+  (see above). Client-key scope is path-level, not a per-tool allowlist; it
+  does not grant access to the admin-only REST `/summarize` or `/admin/*` routes.
+- Official API paths require `KAGI_API_KEY`; authenticated scrape paths need
+  a live session token. Small Web's public feed on the scrape path needs no
+  Kagi session. Registration alone does not validate either credential.
+- Hybrid prefers scrape for tools that support both implementations;
+  API-only tools still use the API. Where offered, `impl` selects the path
+  within the resolved mode. Search's `engine` instead selects Kagi, SearXNG
+  or automatic fallback; search accepts `impl` only with `engine="kagi"`
+  (the default), rejecting it with `auto` or `searxng`. SearXNG requires its
+  own configuration (see below).
+- `MAX_API_CENTS_PER_MONTH=0` (the default) refuses new billable API calls,
+  even if the tool is listed and an API key is present. Zero-cost result-cache
+  hits and free paths are distinct from permission to spend. Listing a tool
+  does not enable paid API use or relax the existing rate/spend controls.
+  Summarizer engine selection applies only on the API path; scrape uses its
+  default engine. Fresh Muriel API execution requires `confirm_muriel=true`
+  by default; a matching cached result needs no new spend confirmation.
+  Confirmation does not override the API cap.
+- Research create/wait/output/cancel are registered in every mode. A wait
+  can time out while work continues, and cancellation is cooperative rather
+  than an immediate terminal-state transition. Output exposes stored state;
+  do not assume a partial report is available before completion.
+- Research `budget_cents=0` or `allow_api=false` skips FastGPT planning/synthesis
+  and API extraction. It is **not a universal no-API guarantee or a hard
+  per-run spend ceiling**: search and fallback URL summaries still follow
+  the resolved mode. Keep the global API cap at `0` to refuse new billable
+  calls; do not raise it merely to exercise a listed tool.
+
+### Offline inventory verification
+
+Against `registerKagiMcp` and its existing registration/schema tests, this
+inventory documents **10/10** registered tools in scrape mode and **14/14**
+in each of API and hybrid modes, with zero falsely advertised tools. Verify
+without Kagi traffic or a browser:
+
+```bash
+npm test -- test/workers/mcp-tools.test.ts test/workers/mcp-schema-contract.test.ts
+```
+
+These tests use mocked clients; the schema tests use an in-memory MCP
+connection (API and scrape snapshots, plus schema assertions). They verify
+registration and local contracts, **not production compatibility**. Missing
+credentials, stale sessions, cap-0 billable calls, unconfigured fallback and
+upstream failures remain blocked or unverified execution scenarios. No live
+Kagi execution or real consumer outcome is established by these counts.
 
 ## Setup
 
