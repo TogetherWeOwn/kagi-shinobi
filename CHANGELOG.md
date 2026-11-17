@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.2](https://github.com/TogetherWeOwn/kagi-shinobi/compare/v1.0.1...v1.0.2) (2026-11-17)
+
+
+### Bug Fixes
+
+* **security:** harden REST errors and update vulnerable dependencies ([#79](https://github.com/TogetherWeOwn/kagi-shinobi/issues/79)) ([768925d](https://github.com/TogetherWeOwn/kagi-shinobi/commit/768925d3719aba556bc47d38dd989cd8008b210e))
+* **security:** reconcile public disclosure and billing hardening into canonical ([#90](https://github.com/TogetherWeOwn/kagi-shinobi/issues/90)) ([a41cee1](https://github.com/TogetherWeOwn/kagi-shinobi/commit/a41cee163ef191105798ecf2519987c374327422))
+
 ## [1.0.1](https://github.com/TogetherWeOwn/kagi-shinobi/compare/v1.0.0...v1.0.1) (2026-10-28)
 
 
