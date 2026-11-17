@@ -1,60 +1,63 @@
-name: Release Please
+name: CalVer release
 
-# Versioning. Conventional commits on main become a "Release PR" that bumps
-# package.json and CHANGELOG.md; merging it publishes a GitHub release and tag.
-# When that happens the `deploy` job below calls .github/workflows/deploy.yml
-# with the new tag. Its `guard` job checks the tag against main and CI, then
-# either approves automatically (PRODUCTION_AUTO_APPROVE=true) or the run waits
-# for the `production` environment's reviewer — see deploy.yml.
-# It is a direct call, not a `release: published` trigger, because releases
-# created with GITHUB_TOKEN never start other workflows.
-#
-# The same GITHUB_TOKEN rule means the Release PR itself gets no CI run on
-# open; dispatch CI (Actions -> CI -> Run workflow) on its branch to get the
-# green check the merge gate needs.
-#
-# First run: no tags exist yet, so the first Release PR establishes v1.0.0
-# (release-please's default initial version) and the CURRENT package.json
-# version (0.2.0-dev) is replaced by it. After that the tool owns the number.
-
+# Keep this workflow path so the release-writer cutover has one owner. An
+# ordinary merge can propose a version PR, never directly select a release.
+# GITHUB_TOKEN-created PRs/releases do not trigger ordinary downstream workflows:
+# ci/calver.ts explicitly dispatches full CI and the existing guarded Deploy.
 on:
   push:
     branches: [main]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Covers planning, generated-branch updates and publication, including retries.
+# Pending runs may coalesce; this is serialization, not a FIFO queue.
+concurrency:
+  group: calver-version-writer
+  cancel-in-progress: false
+
 jobs:
-  release-please:
-    # Runner routing: same overflow vars as CI (see ci.yml `changes`).
-    runs-on: ${{ fromJSON((contains(fromJSON(vars.CI_OVERFLOW_JOBS || '[]'), 'release-please') && contains(fromJSON(vars.CI_OVERFLOW_EVENTS || '[]'), github.event_name) && vars.CI_OVERFLOW_RUNNER) || '["self-hosted","two-selfhosted"]') }}
+  calver:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      ((github.event.workflow_run.event == 'push' ||
+        github.event.workflow_run.event == 'workflow_dispatch' ||
+        github.event.workflow_run.event == 'schedule') &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    # workflow_run is not an overflow-routed event. All new work uses the
+    # standard free public runner, with no self-hosted or paid fallback.
+    runs-on: ubuntu-latest
     timeout-minutes: 10
-    # The block the release-please-action README asks for; issues: write
-    # covers the `autorelease:` labels it manages.
     permissions:
       contents: write
-      issues: write
       pull-requests: write
-    outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
+      issues: write
+      actions: write
     steps:
-      - uses: googleapis/release-please-action@v5
-        id: release
+      # Trusted main orchestration ONLY, never workflow_run's source artifact or
+      # PR code. The selected SHA is read as metadata through the GitHub API.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          release-type: node
-
-  deploy:
-    needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
-    # A called workflow can only keep or reduce these, so the deploy never
-    # sees the write scopes above. actions: read is for the deploy guard (CI
-    # run list, environment).
-    permissions:
-      contents: read
-      actions: read
-    # No `secrets: inherit`: the deploy's secrets are `production`
-    # environment secrets, which resolve inside the gated job itself.
-    uses: ./.github/workflows/deploy.yml
-    with:
-      tag: ${{ needs.release-please.outputs.tag_name }}
+          ref: main
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: TogetherWeOwn/.github
+          ref: 1508f2c10cb83bc0677e8e559ff796a55c66e737
+          path: .calver-tooling
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: Propose or publish the selected CalVer version
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CALVER_TOOLING_ROOT: .calver-tooling/actions/calver
+        run: node ci/calver.ts
