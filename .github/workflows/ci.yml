@@ -87,13 +87,32 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          # The browser migration guard compares every retained lock pin with
+          # the actual PR base, including optional and nested copies.
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           # wrangler requires >= 22; the `wrangler types` step below fails
           # outright on 20, before typecheck or tests ever run.
           node-version: "22"
           cache: "npm"
+      # npm 11.19 supports the native three-day resolution policy. Pin the
+      # reviewed tool on this runner; no dependency lifecycle hooks are allowed.
+      - run: npm install --global npm@11.19.0 --ignore-scripts
+      - name: Verify install policy
+        run: |
+          test "$(npm --version)" = "11.19.0"
+          test "$(npm config get min-release-age)" = "3"
+          test "$(npm config get ignore-scripts)" = "true"
       - run: npm ci
+      - name: Record installed browser dependency graph
+        run: |
+          npm ls @cloudflare/puppeteer devtools-protocol @types/node undici-types --all
+          npm explain @types/node
+          npm explain undici-types
+      - name: Audit complete dependency graph
+        run: npm audit --json > dependency-audit.json
       # `.npmrc` sets legacy-peer-deps=true, so `npm ci` succeeds even when
       # `agents`' exact MCP peer versions disagree with the pins. `npm ls`
       # still reports peer mismatches and exits 1, which makes it the guard
@@ -114,8 +133,10 @@ jobs:
       # that enforces the thresholds in vitest.config.ts. Under plain `npm
       # test` the ratchet never runs and coverage can slide back unnoticed.
       - run: npm run test:coverage
+        env:
+          BROWSER_DEPENDENCY_BASE: ${{ github.event.pull_request.base.sha }}
       # dry-run catches broken bindings/migrations without deploying.
-      - run: npx wrangler deploy --dry-run
+      - run: npx wrangler deploy --dry-run --outdir qualification-bundle
       # End-to-end: boots a real `wrangler dev` and talks to it over HTTP, so
       # it catches what the steps above cannot — a wrangler.jsonc that bundles
       # but does not boot. Needs no Cloudflare credential (every binding
@@ -128,6 +149,18 @@ jobs:
       # webServer timeout and then report only that the server never came up.
       # Cheapest and most specific diagnostic first.
       - run: npm run test:e2e
+      - name: Retain dependency and bundle qualification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: browser-dependency-qualification
+          path: |
+            package-lock.json
+            dependency-audit.json
+            qualification-bundle/
+            coverage/coverage-summary.json
+          retention-days: 7
+          if-no-files-found: error
 
   # The single required check (CI standard). Passes when every
   # needed job succeeded or was skipped. Branch protection must require only

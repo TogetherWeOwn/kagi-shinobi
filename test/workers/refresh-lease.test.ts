@@ -8,7 +8,7 @@
 // Runs in workerd because the lease lives in the Meter Durable Object.
 
 import { env } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { refreshTokenViaBrowser } from "../../src/token/refresh";
 
 const LEASE_MS = 60_000;
@@ -44,6 +44,30 @@ function refreshableEnv(overrides: Record<string, unknown> = {}) {
 }
 
 describe("refreshTokenViaBrowser and the global lease", () => {
+  it.each([
+    { AUTO_REFRESH_ENABLED: "false" },
+    { BROWSER: undefined },
+    { KAGI_EMAIL: undefined },
+    { KAGI_PASSWORD: undefined },
+  ])("makes no binding request for a refused free guard: %j", async (overrides) => {
+    const fetch = vi.fn().mockRejectedValue(new Error("unexpected acquire"));
+    const result = await refreshTokenViaBrowser(refreshableEnv({
+      BROWSER: { fetch }, ...overrides,
+    }));
+
+    expect(result.ok).toBe(false);
+    expect(fetch).not.toHaveBeenCalled();
+    expect((await leaseStub().tryRefreshLease(Date.now(), LEASE_MS)).acquired).toBe(true);
+  });
+
+  it("makes no binding request under a held lease", async () => {
+    await leaseStub().tryRefreshLease(Date.now(), LEASE_MS, true);
+    const fetch = vi.fn().mockRejectedValue(new Error("unexpected acquire"));
+
+    expect((await refreshTokenViaBrowser(refreshableEnv({ BROWSER: { fetch } }))).ok).toBe(false);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("does not touch the lease when auto-refresh is disabled", async () => {
     const result = await refreshTokenViaBrowser(refreshableEnv({ AUTO_REFRESH_ENABLED: "false" }));
 
