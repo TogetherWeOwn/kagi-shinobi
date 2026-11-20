@@ -13,7 +13,9 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../env.js";
 import { createKagiClient, type KagiClient } from "../kagi/client.js";
-import { runPipeline } from "./pipeline.js";
+import { KagiError, safeErrorMessage } from "../kagi/errors.js";
+import { logError } from "../util/log.js";
+import { runPipeline, unrecordedCentsOf } from "./pipeline.js";
 import type {
   CreateRunArgs,
   CreateRunResult,
@@ -121,6 +123,12 @@ export class ResearchRun extends DurableObject<Env> {
   private async executePipeline(initial: ResearchRunState): Promise<void> {
     const client = createKagiClient(this.env);
     await this.updateStatus(initial.run_id, "planning");
+    // A RESOLVED pipeline returns its residual on the result object, but the
+    // result is scoped to this try — if the terminal `done` write itself
+    // throws, the catch sees only an untagged SQL exception. Hold the settled
+    // residual here so the failed terminal write can still fold it in
+    // exactly once.
+    let settledResidual = 0;
     try {
       const result = await runPipeline(
         client,
@@ -134,21 +142,59 @@ export class ResearchRun extends DurableObject<Env> {
           allowApi: () => initial.allow_api,
         },
       );
+      settledResidual = result.unrecorded_cents;
+      // Every step write rejected but the terminal write must not mark the
+      // run done while settled charges are unrecorded: fold the debit the
+      // flush could not deliver into the same durable update.
       this.ctx.storage.sql.exec(
-        `UPDATE ${TABLE} SET plan_json = ?, citations_json = ?, report_markdown = ?, status = 'done', updated_at = ? WHERE run_id = ?`,
+        `UPDATE ${TABLE} SET plan_json = ?, citations_json = ?, report_markdown = ?, status = 'done', cost_cents = cost_cents + ?, updated_at = ? WHERE run_id = ?`,
         JSON.stringify(result.plan),
         JSON.stringify(result.citations),
         result.report_markdown,
+        result.unrecorded_cents,
         new Date().toISOString(),
         initial.run_id,
       );
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const status: ResearchStatus = msg === "cancelled" ? "cancelled" : "failed";
+      // The raw message is read only to recognize the pipeline's own
+      // "cancelled" sentinel. What is STORED is served back to clients by
+      // every readout, so it gets the typed-or-generic treatment; the
+      // sentinel itself is our own fixed string and is stored as-is.
+      const raw = err instanceof Error ? err.message : String(err);
+      const status: ResearchStatus = raw === "cancelled" ? "cancelled" : "failed";
+      const stored = status === "cancelled" ? "cancelled" : safeErrorMessage(err);
+      if (status === "failed") {
+        // Operators only: a diagnostic so a generic stored error is still
+        // actionable in `wrangler tail`. Never crosses to clients. The
+        // fields are allowlisted — the raw message is logged only for typed
+        // KagiErrors, whose messages are our own vocabulary. An untyped
+        // Error's message can carry upstream bodies or echoed credentials,
+        // and its name is mutable to the same taint, so for those we log a
+        // fixed label instead.
+        logError("research run failed", {
+          run_id: initial.run_id,
+          error:
+            err instanceof KagiError
+              ? raw.slice(0, 200)
+              : err instanceof Error
+                ? "untyped error"
+                : "unknown",
+        });
+      }
+      // A pipeline that aborts while its step writes kept rejecting returns
+      // no result object, so the residual debit is tagged onto the thrown
+      // error instead. A RESOLVED pipeline's residual already moved into
+      // `settledResidual` — the error here may then be an untagged terminal
+      // write failure. Exactly one source is nonzero per path, and the
+      // `done` write either applied its add or threw before mutating, so
+      // this fold can never double-add. Unrecorded spend must not die with
+      // the exception.
+      const residual = unrecordedCentsOf(err) + settledResidual;
       this.ctx.storage.sql.exec(
-        `UPDATE ${TABLE} SET status = ?, error = ?, updated_at = ? WHERE run_id = ?`,
+        `UPDATE ${TABLE} SET status = ?, error = ?, cost_cents = cost_cents + ?, updated_at = ? WHERE run_id = ?`,
         status,
-        msg,
+        stored,
+        residual,
         new Date().toISOString(),
         initial.run_id,
       );

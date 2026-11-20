@@ -1,6 +1,7 @@
 # ADR 0004 — Deep research async trio + Durable Object
 
-**Status:** Accepted — 2026-07-11
+**Status:** Accepted — 2026-07-11  
+**Partially superseded:** paid-call scheduling → [ADR 0023](0023-sequential-paid-dispatch-and-retained-charges.md)
 
 ## Context
 
