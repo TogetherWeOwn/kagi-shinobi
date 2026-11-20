@@ -270,7 +270,7 @@ describe("crashes", () => {
     });
   });
 
-  it("stringifies a non-Error throw", async () => {
+  it("does not disclose a non-Error throw", async () => {
     launch.mockRejectedValue("kaboom");
 
     const result = await refreshTokenViaBrowser(refreshableEnv());
@@ -290,7 +290,7 @@ describe("crashes", () => {
     expect(browser.close).toHaveBeenCalled();
   });
 
-  it("does not mask the original failure when close() also throws", async () => {
+  it("returns the generic failure even when close() also throws", async () => {
     const page = fakePage();
     page.goto.mockRejectedValue(new Error("navigation timeout"));
     const browser = fakeBrowser(page);
@@ -315,7 +315,7 @@ describe("cleanup and persistence on failure", () => {
 
     const result = await refreshTokenViaBrowser(config);
 
-    expect(result).toEqual({ ok: false, reason: `refresh failed: ${step} failed` });
+    expect(result).toEqual({ ok: false, reason: "refresh failed" });
     expect(await config.TOKEN_KV.get(config.TOKEN_KV_KEY)).toBeNull();
     expect(await loadToken(config)).toBeNull();
   });
@@ -343,7 +343,7 @@ describe("cleanup and persistence on failure", () => {
     });
 
     expect(await refreshTokenViaBrowser(config)).toEqual({
-      ok: false, reason: "refresh failed: KV unavailable",
+      ok: false, reason: "refresh failed",
     });
     expect(put).toHaveBeenCalledTimes(1);
     expect(await loadToken(refreshableEnv())).toBeNull();
